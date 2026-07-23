@@ -153,7 +153,7 @@ client.on('message', async (msg) => {
 
     // Initialize session if not exists or if they type "hola" / "reiniciar"
     if (!sessions.has(from) || text.toLowerCase() === 'hola' || text.toLowerCase() === 'reiniciar') {
-        sessions.set(from, { step: STEPS.GREETING, data: {} });
+        sessions.set(from, { step: STEPS.GREETING, data: { adjuntos: [] } });
         await msg.reply('¡Hola! Soy el asistente de devoluciones de IAsapre 🤖.\nPor favor, indícame tu *nombre completo* (Ejecutivo):');
         return;
     }
