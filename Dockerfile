@@ -1,4 +1,4 @@
-FROM node:20-bullseye-slim
+FROM node:22-bullseye-slim
 
 # Install necessary libraries for Puppeteer/WhatsApp Web
 RUN apt-get update && apt-get install -y \
