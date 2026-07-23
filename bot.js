@@ -31,7 +31,10 @@ app.listen(PORT, () => {
 // 2. WHATSAPP BOT LOGIC
 // ==========================================
 const client = new Client({
-    authStrategy: new LocalAuth() // Saves session so you don't have to scan QR every time
+    authStrategy: new LocalAuth(),
+    puppeteer: {
+        args: ['--no-sandbox', '--disable-setuid-sandbox']
+    }
 });
 
 client.on('qr', (qr) => {
