@@ -40,6 +40,11 @@ const client = new Client({
 client.on('qr', (qr) => {
     console.log('📱 ESCANEA ESTE CÓDIGO QR CON LA APP DE WHATSAPP:');
     qrcode.generate(qr, { small: true });
+    console.log('\n=========================================');
+    console.log('🚨 SI TU CELULAR NO LEE EL QR DE ARRIBA 🚨');
+    console.log('Copia el siguiente enlace, pégalo en tu navegador y escanea la imagen perfecta:');
+    console.log(`https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(qr)}`);
+    console.log('=========================================\n');
 });
 
 client.on('ready', () => {
