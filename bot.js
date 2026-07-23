@@ -220,7 +220,8 @@ client.on('message', async (msg) => {
                 }
                 const media1 = await msg.downloadMedia();
                 if (media1) {
-                    const url = await db.uploadFile(`contacto_${msg.from}_${media1.filename || 'img.jpg'}`, media1.data, media1.mimetype);
+                    const uniqueFilename = `contacto_${msg.from.split('@')[0]}_${Date.now()}_${media1.filename || 'img.jpg'}`;
+                    const url = await db.uploadFile(uniqueFilename, media1.data, media1.mimetype);
                     session.data.urlContacto = url;
                 }
                 session.step = STEPS.CAUSAL;
@@ -262,7 +263,8 @@ client.on('message', async (msg) => {
                 }
                 const media2 = await msg.downloadMedia();
                 if (media2) {
-                    const url2 = await db.uploadFile(`causal_${msg.from}_${media2.filename || 'doc.jpg'}`, media2.data, media2.mimetype);
+                    const uniqueFilename2 = `causal_${msg.from.split('@')[0]}_${Date.now()}_${media2.filename || 'img.jpg'}`;
+                    const url2 = await db.uploadFile(uniqueFilename2, media2.data, media2.mimetype);
                     session.data.urlCausal = url2;
                 }
                 session.step = STEPS.DECLARACIONES;
