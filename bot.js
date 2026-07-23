@@ -9,6 +9,11 @@ const db = require('./database');
 // 1. EXPRESS WEB SERVER (DASHBOARD)
 // ==========================================
 const app = express();
+const port = process.env.PORT || 3000;
+
+// Variables de estado del bot
+let currentQR = '';
+let botStatus = 'Iniciando servidor...';
 app.use(cors());
 app.use(express.json());
 // Serve the frontend files
@@ -22,9 +27,33 @@ app.get('/api/returns', (req, res) => {
     });
 });
 
-const PORT = 3000;
-app.listen(PORT, () => {
-    console.log(`🚀 Dashboard web disponible en http://localhost:${PORT}`);
+app.get('/qr', (req, res) => {
+    if (botStatus === 'Conectado y listo') {
+        res.send('<h1 style="text-align:center; margin-top:50px; color: green;">✅ El bot ya está conectado y funcionando. No necesitas escanear nada.</h1>');
+    } else if (currentQR) {
+        res.send(`
+            <div style="text-align: center; margin-top: 50px; font-family: sans-serif;">
+                <h2>Escanea este código con tu WhatsApp</h2>
+                <img src="https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(currentQR)}" alt="QR Code" />
+                <p style="font-size: 20px;">Estado actual: <b style="color: blue;">${botStatus}</b></p>
+                <p><i>Esta página se actualiza sola cada 10 segundos para mostrarte el QR más reciente.</i></p>
+                <script>setTimeout(() => location.reload(), 10000);</script>
+            </div>
+        `);
+    } else {
+        res.send(`
+            <div style="text-align: center; margin-top: 50px; font-family: sans-serif;">
+                <h1>Estado: <span style="color: orange;">${botStatus}</span></h1>
+                <p>Por favor espera, la página se recargará sola...</p>
+                <script>setTimeout(() => location.reload(), 5000);</script>
+            </div>
+        `);
+    }
+});
+
+// START SERVER
+app.listen(port, () => {
+    console.log(`🚀 Dashboard web disponible en http://localhost:${port}`);
 });
 
 // ==========================================
@@ -47,6 +76,8 @@ const client = new Client({
 });
 
 client.on('qr', (qr) => {
+    currentQR = qr;
+    botStatus = 'Esperando escaneo de QR...';
     console.log('📱 ESCANEA ESTE CÓDIGO QR CON LA APP DE WHATSAPP:');
     qrcode.generate(qr, { small: true });
     console.log('\n=========================================');
@@ -56,7 +87,26 @@ client.on('qr', (qr) => {
     console.log('=========================================\n');
 });
 
+client.on('loading_screen', (percent, message) => {
+    botStatus = `Sincronizando chats (${percent}%)...`;
+    console.log(`⏳ SINCRONIZANDO CHATS: ${percent}% - ${message}`);
+});
+
+client.on('authenticated', () => {
+    currentQR = '';
+    botStatus = 'Autenticado, descargando chats...';
+    console.log('🔐 ¡Autenticación exitosa! WhatsApp aceptó el código.');
+    console.log('Descargando historial de chats (esto puede demorar varios minutos en servidores gratuitos)...');
+});
+
+client.on('auth_failure', msg => {
+    botStatus = 'Error de autenticación';
+    console.error('❌ Error de autenticación:', msg);
+});
+
 client.on('ready', () => {
+    currentQR = '';
+    botStatus = 'Conectado y listo';
     console.log('✅ Bot de WhatsApp conectado y listo para recibir mensajes.');
 });
 
