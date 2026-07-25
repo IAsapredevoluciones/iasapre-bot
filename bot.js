@@ -59,6 +59,21 @@ app.listen(port, () => {
 // ==========================================
 // 2. WHATSAPP BOT LOGIC
 // ==========================================
+const fs = require('fs');
+function removeSingletonLock(dir) {
+    if (!fs.existsSync(dir)) return;
+    const files = fs.readdirSync(dir);
+    for (const file of files) {
+        const fullPath = path.join(dir, file);
+        if (fs.statSync(fullPath).isDirectory()) {
+            removeSingletonLock(fullPath);
+        } else if (file === 'SingletonLock') {
+            try { fs.unlinkSync(fullPath); console.log('Borrando lock:', fullPath); } catch(e){}
+        }
+    }
+}
+removeSingletonLock(path.join(__dirname, '.wwebjs_auth'));
+
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
@@ -127,8 +142,10 @@ const STEPS = {
 };
 
 // Valid options for text fallback
-const validMeses = ['junio-26', 'julio-26', 'Agosto-26', 'septiembre-26', 'Octubre-26', 'Noviembre-26', 'Diciembre-26'];
-const validBolsas = ['Primera Bolsa', 'Segunda Bolsa', 'Tercera Bolsa', 'Cuarta Bolsa'];
+const validMeses = [
+    'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 
+    'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+];
 const validCausales = ['Falta de anualidad', 'Whatsapp Invalido', 'Preexistencia no afiliable', 'Pre o post natal', 'Renta inferior a $900.000'];
 
 function formatOptions(options) {
@@ -174,19 +191,14 @@ client.on('message', async (msg) => {
                     return;
                 }
                 session.data.mes = mesMatch;
-                session.step = STEPS.BOLSA;
-                await msg.reply('¿A qué *bolsa* corresponde?\nResponde con el número de la opción:\n' + formatOptions(validBolsas));
+                session.data.bolsa = 'N/A'; // Bolsa omitida por solicitud
+                session.step = STEPS.LEAD_NOMBRE;
+                await msg.reply('Por favor, indícame el *nombre completo del lead*:');
                 break;
 
             case STEPS.BOLSA:
-                const bolsaMatch = parseOption(text, validBolsas);
-                if (!bolsaMatch) {
-                    await msg.reply('Por favor responde con el número de una bolsa válida:\n' + formatOptions(validBolsas));
-                    return;
-                }
-                session.data.bolsa = bolsaMatch;
+                // Omitido
                 session.step = STEPS.LEAD_NOMBRE;
-                await msg.reply('Por favor, indícame el *nombre completo del lead*:');
                 break;
 
             case STEPS.LEAD_NOMBRE:
