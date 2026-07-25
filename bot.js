@@ -287,7 +287,8 @@ client.on('message', async (msg) => {
         }
     } catch (e) {
         console.error("Error procesando mensaje:", e);
-        await msg.reply('Ocurrió un error procesando tu mensaje. Escribe "reiniciar" para volver a empezar.');
+        const errorMsg = e.message || JSON.stringify(e) || 'Error desconocido';
+        await msg.reply(`❌ Ocurrió un error interno: *${errorMsg}*\n\nPor favor envíame este mensaje rojo para revisarlo. Escribe "reiniciar" para volver a empezar.`);
     }
 });
 
