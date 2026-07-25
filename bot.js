@@ -60,23 +60,18 @@ app.listen(port, () => {
 // 2. WHATSAPP BOT LOGIC
 // ==========================================
 const fs = require('fs');
-function removeSingletonLock(dir) {
-    if (!fs.existsSync(dir)) return;
-    let files = [];
-    try { files = fs.readdirSync(dir); } catch(e) { return; }
-    for (const file of files) {
-        const fullPath = path.join(dir, file);
-        try {
-            if (fs.lstatSync(fullPath).isDirectory()) {
-                removeSingletonLock(fullPath);
-            } else if (file === 'SingletonLock') {
-                fs.unlinkSync(fullPath);
-                console.log('Borrando lock:', fullPath);
-            }
-        } catch(e) {}
-    }
+const lockPaths = [
+    path.join(__dirname, '.wwebjs_auth', 'session', 'SingletonLock'),
+    path.join(__dirname, '.wwebjs_auth', 'session', 'Default', 'SingletonLock')
+];
+for (const p of lockPaths) {
+    try {
+        if (fs.existsSync(p)) {
+            fs.unlinkSync(p);
+            console.log('Borrando lock:', p);
+        }
+    } catch (e) {}
 }
-removeSingletonLock(path.join(__dirname, '.wwebjs_auth'));
 
 const client = new Client({
     authStrategy: new LocalAuth(),
