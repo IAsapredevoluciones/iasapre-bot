@@ -60,7 +60,6 @@ app.listen(port, () => {
 // 2. WHATSAPP BOT LOGIC
 // ==========================================
 const fs = require('fs');
-const path = require('path');
 function removeSingletonLock(dir) {
     if (!fs.existsSync(dir)) return;
     let files = [];
