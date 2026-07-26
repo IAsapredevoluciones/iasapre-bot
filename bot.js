@@ -1,45 +1,51 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage, getContentType } = require('@whiskeysockets/baileys');
+const { Boom } = require('@hapi/boom');
+const pino = require('pino');
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const QRCode = require('qrcode');
 const db = require('./database');
 
 // ==========================================
-// 1. EXPRESS WEB SERVER (DASHBOARD)
+// 1. EXPRESS WEB SERVER (DASHBOARD + QR)
 // ==========================================
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 10000;
 
-// Variables de estado del bot
 let currentQR = '';
 let botStatus = 'Iniciando servidor...';
+
 app.use(cors());
 app.use(express.json());
-// Serve the frontend files
-app.use(express.static(path.join(__dirname, 'public')));
 
-// API route to get all returns for the dashboard
-app.get('/api/returns', (req, res) => {
-    db.getAllReturns((err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
+app.get('/api/returns', async (req, res) => {
+    try {
+        const rows = await db.getAllReturns();
         res.json(rows);
-    });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-app.get('/qr', (req, res) => {
+app.get('/qr', async (req, res) => {
     if (botStatus === 'Conectado y listo') {
-        res.send('<h1 style="text-align:center; margin-top:50px; color: green;">✅ El bot ya está conectado y funcionando. No necesitas escanear nada.</h1>');
+        res.send('<h1 style="text-align:center; margin-top:50px; color: green; font-family: sans-serif;">✅ El bot ya está conectado y funcionando. No necesitas escanear nada.</h1>');
     } else if (currentQR) {
-        res.send(`
-            <div style="text-align: center; margin-top: 50px; font-family: sans-serif;">
-                <h2>Escanea este código con tu WhatsApp</h2>
-                <img src="https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(currentQR)}" alt="QR Code" />
-                <p style="font-size: 20px;">Estado actual: <b style="color: blue;">${botStatus}</b></p>
-                <p><i>Esta página se actualiza sola cada 10 segundos para mostrarte el QR más reciente.</i></p>
-                <script>setTimeout(() => location.reload(), 10000);</script>
-            </div>
-        `);
+        try {
+            const qrImage = await QRCode.toDataURL(currentQR);
+            res.send(`
+                <div style="text-align: center; margin-top: 50px; font-family: sans-serif;">
+                    <h2>Escanea este código con tu WhatsApp</h2>
+                    <img src="${qrImage}" alt="QR Code" style="width: 400px; height: 400px;" />
+                    <p style="font-size: 20px;">Estado actual: <b style="color: blue;">${botStatus}</b></p>
+                    <p><i>Esta página se actualiza sola cada 10 segundos.</i></p>
+                    <script>setTimeout(() => location.reload(), 10000);</script>
+                </div>
+            `);
+        } catch (e) {
+            res.send('<h1>Error generando QR</h1>');
+        }
     } else {
         res.send(`
             <div style="text-align: center; margin-top: 50px; font-family: sans-serif;">
@@ -51,87 +57,25 @@ app.get('/qr', (req, res) => {
     }
 });
 
-// START SERVER
+// Health check para UptimeRobot u otros monitores
+app.get('/health', (req, res) => {
+    res.json({ status: 'ok', bot: botStatus });
+});
+
 app.listen(port, () => {
     console.log(`🚀 Dashboard web disponible en http://localhost:${port}`);
 });
 
 // ==========================================
-// 2. WHATSAPP BOT LOGIC
+// 2. WHATSAPP BOT CON BAILEYS (SIN CHROMIUM)
 // ==========================================
-const fs = require('fs');
-const sessionDir = path.join(__dirname, '.wwebjs_auth', 'session');
-try {
-    if (fs.existsSync(sessionDir)) {
-        const files = fs.readdirSync(sessionDir);
-        for (const file of files) {
-            if (file.startsWith('Singleton')) {
-                try {
-                    fs.unlinkSync(path.join(sessionDir, file));
-                    console.log('Borrando bloqueo de Chromium:', file);
-                } catch(e) {}
-            }
-        }
-    }
-} catch (e) {}
 
-const client = new Client({
-    authStrategy: new LocalAuth(),
-    puppeteer: {
-        args: [
-            '--no-sandbox', 
-            '--disable-setuid-sandbox', 
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--disable-gpu'
-        ]
-    }
-});
-
-client.on('qr', (qr) => {
-    currentQR = qr;
-    botStatus = 'Esperando escaneo de QR...';
-    console.log('📱 ESCANEA ESTE CÓDIGO QR CON LA APP DE WHATSAPP:');
-    qrcode.generate(qr, { small: true });
-    console.log('\n=========================================');
-    console.log('🚨 SI TU CELULAR NO LEE EL QR DE ARRIBA 🚨');
-    console.log('Copia el siguiente enlace, pégalo en tu navegador y escanea la imagen perfecta:');
-    console.log(`https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(qr)}`);
-    console.log('=========================================\n');
-});
-
-client.on('loading_screen', (percent, message) => {
-    botStatus = `Sincronizando chats (${percent}%)...`;
-    console.log(`⏳ SINCRONIZANDO CHATS: ${percent}% - ${message}`);
-});
-
-client.on('authenticated', () => {
-    currentQR = '';
-    botStatus = 'Autenticado, descargando chats...';
-    console.log('🔐 ¡Autenticación exitosa! WhatsApp aceptó el código.');
-    console.log('Descargando historial de chats (esto puede demorar varios minutos en servidores gratuitos)...');
-});
-
-client.on('auth_failure', msg => {
-    botStatus = 'Error de autenticación';
-    console.error('❌ Error de autenticación:', msg);
-});
-
-client.on('ready', () => {
-    currentQR = '';
-    botStatus = 'Conectado y listo';
-    console.log('✅ Bot de WhatsApp conectado y listo para recibir mensajes.');
-});
-
-// State machine for conversation sessions
+// Máquina de estados para la conversación
 const sessions = new Map();
 
 const STEPS = {
     GREETING: 0,
     MES: 1,
-    BOLSA: 2,
     LEAD_NOMBRE: 3,
     LEAD_TELEFONO: 4,
     HORAS: 5,
@@ -142,9 +86,8 @@ const STEPS = {
     DECLARACIONES: 10
 };
 
-// Valid options for text fallback
 const validMeses = [
-    'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 
+    'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
     'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
 ];
 const validCausales = ['Falta de anualidad', 'Whatsapp Invalido', 'Preexistencia no afiliable', 'Pre o post natal', 'Renta inferior a $900.000'];
@@ -161,150 +104,235 @@ function parseOption(text, options) {
     return options.find(o => o.toLowerCase() === text.toLowerCase());
 }
 
-client.on('message', async (msg) => {
-    const from = msg.from;
-    const text = msg.body.trim();
-    
-    // Ignore status broadcasts
-    if (from === 'status@broadcast') return;
+// Función auxiliar para obtener el texto de un mensaje
+function getMessageText(msg) {
+    const messageType = getContentType(msg.message);
+    if (messageType === 'conversation') return msg.message.conversation;
+    if (messageType === 'extendedTextMessage') return msg.message.extendedTextMessage?.text;
+    if (messageType === 'imageMessage') return msg.message.imageMessage?.caption || '';
+    if (messageType === 'documentMessage') return msg.message.documentMessage?.caption || '';
+    return '';
+}
 
-    // Initialize session if not exists or if they type "hola" / "reiniciar"
-    if (!sessions.has(from) || text.toLowerCase() === 'hola' || text.toLowerCase() === 'reiniciar') {
-        sessions.set(from, { step: STEPS.GREETING, data: { adjuntos: [] } });
-        await msg.reply('¡Hola! Soy el asistente de devoluciones de IAsapre 🤖.\nPor favor, indícame tu *nombre completo* (Ejecutivo):');
-        return;
-    }
+// Función auxiliar para verificar si el mensaje tiene media
+function hasMedia(msg) {
+    const messageType = getContentType(msg.message);
+    return ['imageMessage', 'videoMessage', 'documentMessage'].includes(messageType);
+}
 
-    const session = sessions.get(from);
+let sock = null; // Referencia global al socket
 
-    try {
-        switch (session.step) {
-            case STEPS.GREETING:
-                session.data.ejecutivo = text;
-                session.step = STEPS.MES;
-                await msg.reply(`Gracias, ${text}. ¿A qué *mes* corresponde esta devolución?\nResponde con el número de la opción:\n${formatOptions(validMeses)}`);
-                break;
+async function connectToWhatsApp() {
+    const authDir = path.join(__dirname, 'auth_info');
+    const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
-            case STEPS.MES:
-                const mesMatch = parseOption(text, validMeses);
-                if (!mesMatch) {
-                    await msg.reply('Por favor, responde con el número de un mes válido de la lista:\n' + formatOptions(validMeses));
-                    return;
-                }
-                session.data.mes = mesMatch;
-                session.data.bolsa = 'N/A'; // Bolsa omitida por solicitud
-                session.step = STEPS.LEAD_NOMBRE;
-                await msg.reply('Por favor, indícame el *nombre completo del lead*:');
-                break;
+    sock = makeWASocket({
+        auth: state,
+        printQRInTerminal: true,
+        logger: pino({ level: 'silent' }),
+        browser: ['IAsapre Bot', 'Chrome', '22.0'],
+        connectTimeoutMs: 60000,
+        defaultQueryTimeoutMs: 0,
+        keepAliveIntervalMs: 30000,
+        markOnlineOnConnect: true,
+    });
 
-            case STEPS.BOLSA:
-                // Omitido
-                session.step = STEPS.LEAD_NOMBRE;
-                break;
+    // Guardar credenciales cuando se actualicen
+    sock.ev.on('creds.update', saveCreds);
 
-            case STEPS.LEAD_NOMBRE:
-                session.data.leadNombre = text;
-                session.step = STEPS.LEAD_TELEFONO;
-                await msg.reply('Indícame el *número de teléfono* del lead:');
-                break;
+    // Manejar actualizaciones de conexión
+    sock.ev.on('connection.update', (update) => {
+        const { connection, lastDisconnect, qr } = update;
 
-            case STEPS.LEAD_TELEFONO:
-                session.data.leadTelefono = text;
-                session.step = STEPS.HORAS;
-                await msg.reply('¿Cuántas *horas* pasaron desde que recibiste el lead hasta que lo contactaste? (Escribe solo el número, ej: 12, 25):');
-                break;
-
-            case STEPS.HORAS:
-                const horas = parseInt(text);
-                if (isNaN(horas)) {
-                    await msg.reply('Por favor, ingresa solo un número válido.');
-                    return;
-                }
-                session.data.horasContacto = horas;
-                session.step = STEPS.PROOF_CONTACTO;
-                await msg.reply('Sube/Envía una imagen (captura de pantalla) que acredite el contacto dentro de ese tiempo:');
-                break;
-
-            case STEPS.PROOF_CONTACTO:
-                if (!msg.hasMedia) {
-                    await msg.reply('No he recibido una imagen/archivo. Por favor envía el adjunto para continuar.');
-                    return;
-                }
-                const media1 = await msg.downloadMedia();
-                if (media1) {
-                    const uniqueFilename = `contacto_${msg.from.split('@')[0]}_${Date.now()}_${media1.filename || 'img.jpg'}`;
-                    const url = await db.uploadFile(uniqueFilename, media1.data, media1.mimetype);
-                    session.data.urlContacto = url;
-                }
-                session.step = STEPS.CAUSAL;
-                await msg.reply('Imagen recibida. ¿Cuál es la *causal* de la devolución?\nResponde con el número de la opción:\n' + formatOptions(validCausales));
-                break;
-
-            case STEPS.CAUSAL:
-                let causalMatch = parseOption(text, validCausales);
-                if (!causalMatch) {
-                    await msg.reply('Causal no válida. Responde con el número de la opción:\n' + formatOptions(validCausales));
-                    return;
-                }
-                session.data.causal = causalMatch;
-                
-                if (causalMatch === 'Falta de anualidad') {
-                    session.step = STEPS.PERMANENCIA;
-                    await msg.reply('Ingresa los meses de *permanencia* del afiliado (ej: 8, 10):');
-                } else {
-                    session.step = STEPS.PROOF_CAUSAL;
-                    await msg.reply('Sube/Envía el documento o captura que *acredite* esta causal (y el mensaje de cierre si aplica):');
-                }
-                break;
-
-            case STEPS.PERMANENCIA:
-                const meses = parseInt(text);
-                if (isNaN(meses)) {
-                    await msg.reply('Por favor, ingresa solo un número válido.');
-                    return;
-                }
-                session.data.mesesPermanencia = meses;
-                session.step = STEPS.PROOF_CAUSAL;
-                await msg.reply('Sube/Envía el documento o captura que *acredite* esta causal (y el mensaje de cierre enviado):');
-                break;
-
-            case STEPS.PROOF_CAUSAL:
-                if (!msg.hasMedia) {
-                    await msg.reply('Por favor envía el archivo adjunto para continuar.');
-                    return;
-                }
-                const media2 = await msg.downloadMedia();
-                if (media2) {
-                    const uniqueFilename2 = `causal_${msg.from.split('@')[0]}_${Date.now()}_${media2.filename || 'img.jpg'}`;
-                    const url2 = await db.uploadFile(uniqueFilename2, media2.data, media2.mimetype);
-                    session.data.urlCausal = url2;
-                }
-                session.step = STEPS.DECLARACIONES;
-                await msg.reply('Para finalizar, escribe *ACEPTO* para confirmar las siguientes declaraciones obligatorias:\n1. Contacté al cotizante en < 24h.\n2. La información es veraz.\n3. Envié mensaje de cierre.\n4. No volveré a contactar a este lead.\n5. No usaré los datos para otros fines.');
-                break;
-
-            case STEPS.DECLARACIONES:
-                if (text.toLowerCase() !== 'acepto') {
-                    await msg.reply('Debes escribir la palabra "Acepto" para continuar y enviar tu solicitud.');
-                    return;
-                }
-                
-                // Finalizar y Evaluar
-                await msg.reply('Procesando tu solicitud...');
-                await evaluateAndSave(session.data, msg);
-                
-                // Clear session
-                sessions.delete(from);
-                break;
+        if (qr) {
+            currentQR = qr;
+            botStatus = 'Esperando escaneo de QR...';
+            console.log('📱 Nuevo QR generado. Escanéalo en /qr');
         }
-    } catch (e) {
-        console.error("Error procesando mensaje:", e);
-        const errorMsg = e.message || JSON.stringify(e) || 'Error desconocido';
-        await msg.reply(`❌ Ocurrió un error interno: *${errorMsg}*\n\nPor favor envíame este mensaje rojo para revisarlo. Escribe "reiniciar" para volver a empezar.`);
-    }
-});
 
-async function evaluateAndSave(data, whatsappMsg) {
+        if (connection === 'close') {
+            currentQR = '';
+            const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+            console.log(`⚠️ Conexión cerrada. Código: ${statusCode}. Reconectando: ${shouldReconnect}`);
+            botStatus = 'Reconectando...';
+            if (shouldReconnect) {
+                setTimeout(() => connectToWhatsApp(), 3000);
+            } else {
+                botStatus = 'Sesión cerrada. Reinicia el servidor para volver a escanear.';
+            }
+        }
+
+        if (connection === 'open') {
+            currentQR = '';
+            botStatus = 'Conectado y listo';
+            console.log('✅ Bot de WhatsApp conectado y listo para recibir mensajes.');
+        }
+    });
+
+    // Manejar mensajes entrantes
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        if (type !== 'notify') return;
+
+        for (const msg of messages) {
+            try {
+                // Ignorar mensajes propios y de status
+                if (msg.key.fromMe) continue;
+                if (msg.key.remoteJid === 'status@broadcast') continue;
+                if (!msg.message) continue;
+
+                const from = msg.key.remoteJid;
+                const text = (getMessageText(msg) || '').trim();
+                const isMedia = hasMedia(msg);
+
+                // Inicializar sesión si no existe o si escribe "hola" / "reiniciar"
+                if (!sessions.has(from) || text.toLowerCase() === 'hola' || text.toLowerCase() === 'reiniciar') {
+                    sessions.set(from, { step: STEPS.GREETING, data: { adjuntos: [] } });
+                    await sock.sendMessage(from, { text: '¡Hola! Soy el asistente de devoluciones de IAsapre 🤖.\nPor favor, indícame tu *nombre completo* (Ejecutivo):' });
+                    continue;
+                }
+
+                const session = sessions.get(from);
+
+                switch (session.step) {
+                    case STEPS.GREETING:
+                        session.data.ejecutivo = text;
+                        session.step = STEPS.MES;
+                        await sock.sendMessage(from, { text: `Gracias, ${text}. ¿A qué *mes* corresponde esta devolución?\nResponde con el número de la opción:\n${formatOptions(validMeses)}` });
+                        break;
+
+                    case STEPS.MES: {
+                        const mesMatch = parseOption(text, validMeses);
+                        if (!mesMatch) {
+                            await sock.sendMessage(from, { text: 'Por favor, responde con el número de un mes válido de la lista:\n' + formatOptions(validMeses) });
+                            continue;
+                        }
+                        session.data.mes = mesMatch;
+                        session.data.bolsa = 'N/A';
+                        session.step = STEPS.LEAD_NOMBRE;
+                        await sock.sendMessage(from, { text: 'Por favor, indícame el *nombre completo del lead*:' });
+                        break;
+                    }
+
+                    case STEPS.LEAD_NOMBRE:
+                        session.data.leadNombre = text;
+                        session.step = STEPS.LEAD_TELEFONO;
+                        await sock.sendMessage(from, { text: 'Indícame el *número de teléfono* del lead:' });
+                        break;
+
+                    case STEPS.LEAD_TELEFONO:
+                        session.data.leadTelefono = text;
+                        session.step = STEPS.HORAS;
+                        await sock.sendMessage(from, { text: '¿Cuántas *horas* pasaron desde que recibiste el lead hasta que lo contactaste? (Escribe solo el número, ej: 12, 25):' });
+                        break;
+
+                    case STEPS.HORAS: {
+                        const horas = parseInt(text);
+                        if (isNaN(horas)) {
+                            await sock.sendMessage(from, { text: 'Por favor, ingresa solo un número válido.' });
+                            continue;
+                        }
+                        session.data.horasContacto = horas;
+                        session.step = STEPS.PROOF_CONTACTO;
+                        await sock.sendMessage(from, { text: 'Sube/Envía una imagen (captura de pantalla) que acredite el contacto dentro de ese tiempo:' });
+                        break;
+                    }
+
+                    case STEPS.PROOF_CONTACTO: {
+                        if (!isMedia) {
+                            await sock.sendMessage(from, { text: 'No he recibido una imagen/archivo. Por favor envía el adjunto para continuar.' });
+                            continue;
+                        }
+                        const buffer1 = await downloadMediaMessage(msg, 'buffer', {}, { logger: pino({ level: 'silent' }), reuploadRequest: sock.updateMediaMessage });
+                        if (buffer1) {
+                            const messageType = getContentType(msg.message);
+                            const mimeType = msg.message[messageType]?.mimetype || 'image/jpeg';
+                            const ext = mimeType.split('/')[1] || 'jpg';
+                            const uniqueFilename = `contacto_${from.split('@')[0]}_${Date.now()}.${ext}`;
+                            const url = await db.uploadFile(uniqueFilename, buffer1, mimeType);
+                            session.data.urlContacto = url;
+                        }
+                        session.step = STEPS.CAUSAL;
+                        await sock.sendMessage(from, { text: 'Imagen recibida ✅. ¿Cuál es la *causal* de la devolución?\nResponde con el número de la opción:\n' + formatOptions(validCausales) });
+                        break;
+                    }
+
+                    case STEPS.CAUSAL: {
+                        const causalMatch = parseOption(text, validCausales);
+                        if (!causalMatch) {
+                            await sock.sendMessage(from, { text: 'Causal no válida. Responde con el número de la opción:\n' + formatOptions(validCausales) });
+                            continue;
+                        }
+                        session.data.causal = causalMatch;
+
+                        if (causalMatch === 'Falta de anualidad') {
+                            session.step = STEPS.PERMANENCIA;
+                            await sock.sendMessage(from, { text: 'Ingresa los meses de *permanencia* del afiliado (ej: 8, 10):' });
+                        } else {
+                            session.step = STEPS.PROOF_CAUSAL;
+                            await sock.sendMessage(from, { text: 'Sube/Envía el documento o captura que *acredite* esta causal (y el mensaje de cierre si aplica):' });
+                        }
+                        break;
+                    }
+
+                    case STEPS.PERMANENCIA: {
+                        const meses = parseInt(text);
+                        if (isNaN(meses)) {
+                            await sock.sendMessage(from, { text: 'Por favor, ingresa solo un número válido.' });
+                            continue;
+                        }
+                        session.data.mesesPermanencia = meses;
+                        session.step = STEPS.PROOF_CAUSAL;
+                        await sock.sendMessage(from, { text: 'Sube/Envía el documento o captura que *acredite* esta causal (y el mensaje de cierre enviado):' });
+                        break;
+                    }
+
+                    case STEPS.PROOF_CAUSAL: {
+                        if (!isMedia) {
+                            await sock.sendMessage(from, { text: 'Por favor envía el archivo adjunto para continuar.' });
+                            continue;
+                        }
+                        const buffer2 = await downloadMediaMessage(msg, 'buffer', {}, { logger: pino({ level: 'silent' }), reuploadRequest: sock.updateMediaMessage });
+                        if (buffer2) {
+                            const messageType = getContentType(msg.message);
+                            const mimeType = msg.message[messageType]?.mimetype || 'image/jpeg';
+                            const ext = mimeType.split('/')[1] || 'jpg';
+                            const uniqueFilename2 = `causal_${from.split('@')[0]}_${Date.now()}.${ext}`;
+                            const url2 = await db.uploadFile(uniqueFilename2, buffer2, mimeType);
+                            session.data.urlCausal = url2;
+                        }
+                        session.step = STEPS.DECLARACIONES;
+                        await sock.sendMessage(from, { text: 'Para finalizar, escribe *ACEPTO* para confirmar las siguientes declaraciones obligatorias:\n1. Contacté al cotizante en < 24h.\n2. La información es veraz.\n3. Envié mensaje de cierre.\n4. No volveré a contactar a este lead.\n5. No usaré los datos para otros fines.' });
+                        break;
+                    }
+
+                    case STEPS.DECLARACIONES: {
+                        if (text.toLowerCase() !== 'acepto') {
+                            await sock.sendMessage(from, { text: 'Debes escribir la palabra "Acepto" para continuar y enviar tu solicitud.' });
+                            continue;
+                        }
+
+                        await sock.sendMessage(from, { text: 'Procesando tu solicitud...' });
+                        await evaluateAndSave(session.data, from);
+                        sessions.delete(from);
+                        break;
+                    }
+                }
+            } catch (e) {
+                console.error("Error procesando mensaje:", e);
+                const from = msg.key.remoteJid;
+                try {
+                    const errorMsg = e.message || 'Error desconocido';
+                    await sock.sendMessage(from, { text: `❌ Ocurrió un error interno: *${errorMsg}*\n\nEscribe "reiniciar" para volver a empezar.` });
+                } catch (sendErr) {
+                    console.error("Error enviando error:", sendErr);
+                }
+            }
+        }
+    });
+}
+
+async function evaluateAndSave(data, from) {
     let estado = 'APROBADA';
     let motivo = 'Cumple con los criterios del protocolo IAsapre.';
 
@@ -312,59 +340,56 @@ async function evaluateAndSave(data, whatsappMsg) {
     if (data.horasContacto > 24) {
         estado = 'RECHAZADA';
         motivo = `El contacto se realizó en ${data.horasContacto} horas (Máximo 24h).`;
-    } 
+    }
     // Regla 2
     else if (data.causal === 'Falta de anualidad' && data.mesesPermanencia >= 10) {
         estado = 'RECHAZADA';
         motivo = `La permanencia declarada es de ${data.mesesPermanencia} meses (Máximo 9).`;
-    } 
+    }
     // Regla 3
     else if (data.causal === 'Whatsapp Invalido') {
         estado = 'REEMPLAZO';
         motivo = 'El número es inválido. Este dato será reemplazado y NO consume una devolución.';
     }
 
-    // Regla 4: Verificar límites en Base de Datos
+    // Regla 4: Verificar límites
     if (estado !== 'REEMPLAZO') {
-        db.getCountForBolsa(data.ejecutivo, data.bolsa, (err, count) => {
-            if (!err && count >= 5) {
-                estado = 'RECHAZADA';
-                motivo = `Se ha alcanzado el límite de 5 devoluciones para la ${data.bolsa}.`;
-            }
-            saveAndNotify(data, estado, motivo, whatsappMsg);
-        });
-    } else {
-        saveAndNotify(data, estado, motivo, whatsappMsg);
+        const count = await db.getCountForBolsa(data.ejecutivo, data.bolsa);
+        if (count >= 5) {
+            estado = 'RECHAZADA';
+            motivo = `Se ha alcanzado el límite de 5 devoluciones.`;
+        }
     }
-}
 
-function saveAndNotify(data, estado, motivo, msg) {
     const id = 'RET-' + Math.random().toString(36).substr(2, 9).toUpperCase();
     const fecha = new Date().toISOString();
-    
-    db.saveReturn({
-        id, fecha, ...data, estado, motivo
-    }, async (err) => {
-        if (err) {
-            console.error(err);
-            await msg.reply('❌ Ocurrió un error al guardar en la base de datos.');
-            return;
-        }
 
-        let replyMsg = `✅ Su devolución ha quedado ingresada exitosamente (ID: ${id}).\n\nTodos los antecedentes y el motivo de la devolución pasarán por una revisión interna. Se le dará una respuesta a la brevedad. ¡Gracias!`;
-        await msg.reply(replyMsg);
+    try {
+        await db.saveReturn({
+            id, fecha, ...data, estado, motivo,
+            comprobantes: JSON.stringify({
+                contacto: data.urlContacto || null,
+                causal: data.urlCausal || null
+            })
+        });
+
+        await sock.sendMessage(from, { text: `✅ Su devolución ha quedado ingresada exitosamente (ID: ${id}).\n\nTodos los antecedentes y el motivo de la devolución pasarán por una revisión interna. Se le dará una respuesta a la brevedad. ¡Gracias!` });
 
         // Notificar al administrador
-        const adminNumber = '56985380357@c.us';
+        const adminNumber = '56985380357@s.whatsapp.net';
         const docLinks = [];
         if (data.urlContacto) docLinks.push(`Contacto: ${data.urlContacto}`);
         if (data.urlCausal) docLinks.push(`Causal: ${data.urlCausal}`);
         const attachmentsStr = docLinks.length > 0 ? `\n*Adjuntos:*\n${docLinks.join('\n')}` : '';
-        
-        const adminText = `🚨 *NUEVA SOLICITUD DE DEVOLUCIÓN INGRESADA*\n\n*ID:* ${id}\n*Ejecutivo:* ${data.ejecutivo}\n*Lead:* ${data.leadNombre} (${data.leadTelefono})\n*Mes/Bolsa:* ${data.mes} / ${data.bolsa}\n*Causal:* ${data.causal}\n*Horas Contacto:* ${data.horasContacto}h\n*Permanencia Declarada:* ${data.mesesPermanencia || 'N/A'}\n\n*Evaluación Automática Preliminar:* ${estado}\n*Motivo:* ${motivo}${attachmentsStr}`;
-        
-        client.sendMessage(adminNumber, adminText).catch(console.error);
-    });
+
+        const adminText = `🚨 *NUEVA SOLICITUD DE DEVOLUCIÓN INGRESADA*\n\n*ID:* ${id}\n*Ejecutivo:* ${data.ejecutivo}\n*Lead:* ${data.leadNombre} (${data.leadTelefono})\n*Mes:* ${data.mes}\n*Causal:* ${data.causal}\n*Horas Contacto:* ${data.horasContacto}h\n*Permanencia Declarada:* ${data.mesesPermanencia || 'N/A'}\n\n*Evaluación Automática Preliminar:* ${estado}\n*Motivo:* ${motivo}${attachmentsStr}`;
+
+        await sock.sendMessage(adminNumber, { text: adminText });
+    } catch (err) {
+        console.error("Error guardando en DB:", err);
+        await sock.sendMessage(from, { text: '❌ Ocurrió un error al guardar en la base de datos. Escribe "reiniciar" para intentar de nuevo.' });
+    }
 }
 
-client.initialize();
+// Iniciar conexión
+connectToWhatsApp();

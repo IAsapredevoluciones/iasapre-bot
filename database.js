@@ -1,4 +1,5 @@
 require('dotenv').config();
+global.WebSocket = require('ws');
 const { createClient } = require('@supabase/supabase-js');
 
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -7,41 +8,49 @@ const supabaseKey = process.env.SUPABASE_KEY;
 let supabase = null;
 if (supabaseUrl && supabaseKey) {
     supabase = createClient(supabaseUrl, supabaseKey);
+    console.log('✅ Supabase conectado correctamente.');
 } else {
-    console.warn("⚠️ Advertencia: No se encontraron las credenciales de Supabase (SUPABASE_URL y SUPABASE_KEY). La base de datos no funcionará correctamente en la nube.");
+    console.warn("⚠️ Advertencia: No se encontraron SUPABASE_URL y SUPABASE_KEY.");
 }
 
-// Function to save a return
-async function saveReturn(data, callback) {
-    if (!supabase) return callback(new Error("Supabase no configurado"));
-    
-    const { id, fecha, ejecutivo, mes, bolsa, leadNombre, leadTelefono, causal, horasContacto, mesesPermanencia, estado, motivo, comprobantesUrls } = data;
+async function saveReturn(data) {
+    if (!supabase) throw new Error("Supabase no configurado");
     
     const { error } = await supabase
         .from('devoluciones')
         .insert([{
-            id, fecha, ejecutivo, mes, bolsa, leadNombre, leadTelefono, causal, horasContacto, mesesPermanencia, estado, motivo, 
-            comprobantes: comprobantesUrls ? JSON.stringify(comprobantesUrls) : null
+            id: data.id,
+            fecha: data.fecha,
+            ejecutivo: data.ejecutivo,
+            mes: data.mes,
+            bolsa: data.bolsa,
+            "leadNombre": data.leadNombre,
+            "leadTelefono": data.leadTelefono,
+            causal: data.causal,
+            "horasContacto": data.horasContacto,
+            "mesesPermanencia": data.mesesPermanencia,
+            estado: data.estado,
+            motivo: data.motivo,
+            comprobantes: data.comprobantes || null
         }]);
         
-    if (callback) callback(error);
+    if (error) throw error;
 }
 
-// Function to get all returns
-async function getAllReturns(callback) {
-    if (!supabase) return callback(new Error("Supabase no configurado"));
+async function getAllReturns() {
+    if (!supabase) throw new Error("Supabase no configurado");
     
     const { data, error } = await supabase
         .from('devoluciones')
         .select('*')
         .order('fecha', { ascending: false });
         
-    if (callback) callback(error, data);
+    if (error) throw error;
+    return data;
 }
 
-// Function to check how many returns an executive has in a bag (excluding replaced ones)
-async function getCountForBolsa(ejecutivo, bolsa, callback) {
-    if (!supabase) return callback(new Error("Supabase no configurado"), 0);
+async function getCountForBolsa(ejecutivo, bolsa) {
+    if (!supabase) return 0;
 
     const { count, error } = await supabase
         .from('devoluciones')
@@ -50,35 +59,33 @@ async function getCountForBolsa(ejecutivo, bolsa, callback) {
         .eq('bolsa', bolsa)
         .neq('estado', 'REEMPLAZO');
         
-    if (callback) callback(error, count || 0);
+    if (error) return 0;
+    return count || 0;
 }
 
-// Function to upload file to Supabase Storage
-async function uploadFile(fileName, base64Data, mimeType) {
+async function uploadFile(fileName, buffer, mimeType) {
     if (!supabase) return null;
     
     try {
-        const buffer = Buffer.from(base64Data, 'base64');
         const { data, error } = await supabase.storage
-            .from('comprobantes')
+            .from('adjuntos')
             .upload(`devoluciones/${Date.now()}_${fileName}`, buffer, {
                 contentType: mimeType,
                 upsert: false
             });
             
         if (error) {
-            console.error("Error subiendo a Supabase Storage:", error);
+            console.error("Error subiendo a Supabase Storage:", error.message);
             return null;
         }
         
-        // Obtenemos la URL pública del archivo subido
         const { data: publicUrlData } = supabase.storage
-            .from('comprobantes')
+            .from('adjuntos')
             .getPublicUrl(data.path);
             
         return publicUrlData.publicUrl;
     } catch (err) {
-        console.error("Error en uploadFile:", err);
+        console.error("Error en uploadFile:", err.message);
         return null;
     }
 }
