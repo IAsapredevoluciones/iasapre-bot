@@ -60,18 +60,20 @@ app.listen(port, () => {
 // 2. WHATSAPP BOT LOGIC
 // ==========================================
 const fs = require('fs');
-const lockPaths = [
-    path.join(__dirname, '.wwebjs_auth', 'session', 'SingletonLock'),
-    path.join(__dirname, '.wwebjs_auth', 'session', 'Default', 'SingletonLock')
-];
-for (const p of lockPaths) {
-    try {
-        if (fs.existsSync(p)) {
-            fs.unlinkSync(p);
-            console.log('Borrando lock:', p);
+const sessionDir = path.join(__dirname, '.wwebjs_auth', 'session');
+try {
+    if (fs.existsSync(sessionDir)) {
+        const files = fs.readdirSync(sessionDir);
+        for (const file of files) {
+            if (file.startsWith('Singleton')) {
+                try {
+                    fs.unlinkSync(path.join(sessionDir, file));
+                    console.log('Borrando bloqueo de Chromium:', file);
+                } catch(e) {}
+            }
         }
-    } catch (e) {}
-}
+    }
+} catch (e) {}
 
 const client = new Client({
     authStrategy: new LocalAuth(),
