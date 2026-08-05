@@ -407,8 +407,8 @@ async function connectToWhatsApp() {
 // 3. EVALUACIÓN Y GUARDADO
 // ==========================================
 async function evaluateAndSave(data, from) {
-    let estado = 'APROBADA';
-    let motivo = 'Cumple con los criterios del protocolo IAsapre.';
+    let estado = 'PREAPROBADA';
+    let motivo = 'Cumple con los criterios del protocolo IAsapre. Sujeto a revisión por el equipo interno.';
 
     if (data.horasContacto > 24) {
         estado = 'RECHAZADA';
@@ -451,7 +451,7 @@ async function evaluateAndSave(data, from) {
         });
 
         await sock.sendMessage(from, {
-            text: '✅ Devolución ingresada (ID: ' + id + ').\n\nGracias por informarlo. Se revisará y tendrás una respuesta en un máximo de 5 días hábiles.'
+            text: '✅ Devolución ingresada (ID: ' + id + ').\n\nGracias por informarlo. Se revisará y tendrás una respuesta en un máximo de 5 días hábiles.\n\nAnte cualquier duda, escribe a Nicolás Larraín: +56985380357 o nico@iasapre.cl'
         });
 
         // Notificar al administrador
