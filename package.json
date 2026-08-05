@@ -1,14 +1,15 @@
 {
   "name": "iasapre-whatsapp-bot",
   "version": "2.0.0",
-  "description": "WhatsApp Bot for IAsapre Devoluciones (Baileys - sin Chromium)",
+  "type": "module",
+  "description": "Bot WhatsApp IAsapre Devoluciones",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",
-    "@whiskeysockets/baileys": "^6.7.16",
+    "@whiskeysockets/baileys": "^6.7.9",
     "@supabase/supabase-js": "^2.39.0",
     "dotenv": "^16.6.1",
     "express": "^4.18.2",

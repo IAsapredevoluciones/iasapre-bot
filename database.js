@@ -1,6 +1,11 @@
-require('dotenv').config();
-global.WebSocket = require('ws');
-const { createClient } = require('@supabase/supabase-js');
+import 'dotenv/config';
+import { WebSocket } from 'ws';
+import { createClient } from '@supabase/supabase-js';
+
+// Polyfill WebSocket para Node < 22
+if (typeof globalThis.WebSocket === 'undefined') {
+    globalThis.WebSocket = WebSocket;
+}
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
@@ -8,91 +13,75 @@ const supabaseKey = process.env.SUPABASE_KEY;
 let supabase = null;
 if (supabaseUrl && supabaseKey) {
     supabase = createClient(supabaseUrl, supabaseKey);
-    console.log('✅ Supabase conectado correctamente.');
+    console.log('✅ Supabase conectado.');
 } else {
-    console.warn("⚠️ Advertencia: No se encontraron SUPABASE_URL y SUPABASE_KEY.");
+    console.warn('⚠️ SUPABASE_URL o SUPABASE_KEY no configurados.');
 }
 
-async function saveReturn(data) {
-    if (!supabase) throw new Error("Supabase no configurado");
-    
-    const { error } = await supabase
-        .from('devoluciones')
-        .insert([{
-            id: data.id,
-            fecha: data.fecha,
-            ejecutivo: data.ejecutivo,
-            mes: data.mes,
-            bolsa: data.bolsa,
-            "leadNombre": data.leadNombre,
-            "leadTelefono": data.leadTelefono,
-            causal: data.causal,
-            "horasContacto": data.horasContacto,
-            "mesesPermanencia": data.mesesPermanencia,
-            estado: data.estado,
-            motivo: data.motivo,
-            comprobantes: data.comprobantes || null
-        }]);
-        
+export async function saveReturn(record) {
+    if (!supabase) throw new Error('Supabase no configurado');
+
+    const { error } = await supabase.from('devoluciones').insert([{
+        id: record.id,
+        fecha: record.fecha,
+        ejecutivo: record.ejecutivo,
+        mes: record.mes,
+        bolsa: record.bolsa,
+        leadNombre: record.leadNombre,
+        leadTelefono: record.leadTelefono,
+        causal: record.causal,
+        horasContacto: record.horasContacto,
+        mesesPermanencia: record.mesesPermanencia || null,
+        estado: record.estado,
+        motivo: record.motivo,
+        comprobantes: record.comprobantes || null
+    }]);
+
     if (error) throw error;
 }
 
-async function getAllReturns() {
-    if (!supabase) throw new Error("Supabase no configurado");
-    
+export async function getAllReturns() {
+    if (!supabase) return [];
     const { data, error } = await supabase
         .from('devoluciones')
         .select('*')
         .order('fecha', { ascending: false });
-        
     if (error) throw error;
-    return data;
+    return data || [];
 }
 
-async function getCountForBolsa(ejecutivo, bolsa) {
+export async function getCountForBolsa(ejecutivo, bolsa) {
     if (!supabase) return 0;
-
     const { count, error } = await supabase
         .from('devoluciones')
         .select('*', { count: 'exact', head: true })
         .eq('ejecutivo', ejecutivo)
         .eq('bolsa', bolsa)
         .neq('estado', 'REEMPLAZO');
-        
     if (error) return 0;
     return count || 0;
 }
 
-async function uploadFile(fileName, buffer, mimeType) {
+export async function uploadFile(fileName, buffer, mimeType) {
     if (!supabase) return null;
-    
     try {
+        const filePath = 'devoluciones/' + Date.now() + '_' + fileName;
         const { data, error } = await supabase.storage
             .from('adjuntos')
-            .upload(`devoluciones/${Date.now()}_${fileName}`, buffer, {
-                contentType: mimeType,
-                upsert: false
-            });
-            
+            .upload(filePath, buffer, { contentType: mimeType, upsert: false });
+
         if (error) {
-            console.error("Error subiendo a Supabase Storage:", error.message);
+            console.error('Error subiendo archivo:', error.message);
             return null;
         }
-        
-        const { data: publicUrlData } = supabase.storage
+
+        const { data: urlData } = supabase.storage
             .from('adjuntos')
             .getPublicUrl(data.path);
-            
-        return publicUrlData.publicUrl;
+
+        return urlData.publicUrl;
     } catch (err) {
-        console.error("Error en uploadFile:", err.message);
+        console.error('Error en uploadFile:', err.message);
         return null;
     }
 }
-
-module.exports = {
-    saveReturn,
-    getAllReturns,
-    getCountForBolsa,
-    uploadFile
-};
