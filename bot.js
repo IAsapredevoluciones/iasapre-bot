@@ -126,6 +126,42 @@ function parseOption(text, opts) {
     return null;
 }
 
+function isValidName(text) {
+    const t = text.trim();
+    if (t.length < 3) return false;
+    if (!/^[a-zA-ZÀ-ÿ\s.'-]+$/.test(t)) return false;
+    const words = t.split(/\s+/).filter(Boolean);
+    if (words.length < 2) return false;
+    return true;
+}
+
+function nameErrorMessage(text, fieldLabel) {
+    const t = text.trim();
+    if (/[0-9]/.test(t)) {
+        return '❌ "' + text + '" no es válido: no puede contener números. Escribe ' + fieldLabel + ' usando solo letras.';
+    }
+    if (t.length < 3) {
+        return '❌ "' + text + '" no es válido: es muy corto. Escribe ' + fieldLabel + ' completo (nombre y apellido).';
+    }
+    const words = t.split(/\s+/).filter(Boolean);
+    if (words.length < 2) {
+        return '❌ "' + text + '" no es válido: parece un solo nombre. Escribe ' + fieldLabel + ' completo (nombre y apellido).';
+    }
+    return '❌ "' + text + '" no es válido. Escribe ' + fieldLabel + ' usando solo letras y espacios.';
+}
+
+function validatePhone(text) {
+    const t = text.trim();
+    const digits = t.replace(/[^0-9]/g, '');
+    if (!/^[0-9+()\s-]+$/.test(t)) {
+        return '❌ "' + text + '" no es válido: un teléfono solo puede tener números y opcionalmente +, espacios o guiones. Ej: +56912345678';
+    }
+    if (digits.length < 8 || digits.length > 13) {
+        return '❌ "' + text + '" no es válido: debe tener entre 8 y 13 dígitos. Ej: +56912345678';
+    }
+    return null;
+}
+
 function getMessageText(msg) {
     if (!msg.message) return '';
     const type = getContentType(msg.message);
@@ -209,6 +245,10 @@ async function connectToWhatsApp() {
                 const session = sessions.get(from);
 
                 if (session.step === STEPS.GREETING) {
+                    if (!isValidName(text)) {
+                        await sock.sendMessage(from, { text: nameErrorMessage(text, 'tu nombre completo (Ejecutivo)') });
+                        continue;
+                    }
                     session.data.ejecutivo = text;
                     session.step = STEPS.MES;
                     await sock.sendMessage(from, {
@@ -218,7 +258,7 @@ async function connectToWhatsApp() {
                 else if (session.step === STEPS.MES) {
                     const mesMatch = parseOption(text, validMeses);
                     if (!mesMatch) {
-                        await sock.sendMessage(from, { text: 'Mes no válido. Responde con el número:\n' + formatOptions(validMeses) });
+                        await sock.sendMessage(from, { text: '❌ "' + text + '" no es válido: no corresponde a ninguna opción de mes. Responde solo con el número de la lista:\n' + formatOptions(validMeses) });
                         continue;
                     }
                     session.data.mes = mesMatch;
@@ -227,11 +267,20 @@ async function connectToWhatsApp() {
                     await sock.sendMessage(from, { text: 'Indícame el *nombre completo del lead*:' });
                 }
                 else if (session.step === STEPS.LEAD_NOMBRE) {
+                    if (!isValidName(text)) {
+                        await sock.sendMessage(from, { text: nameErrorMessage(text, 'el nombre completo del lead') });
+                        continue;
+                    }
                     session.data.leadNombre = text;
                     session.step = STEPS.LEAD_TELEFONO;
                     await sock.sendMessage(from, { text: 'Indícame el *número de teléfono* del lead:' });
                 }
                 else if (session.step === STEPS.LEAD_TELEFONO) {
+                    const phoneError = validatePhone(text);
+                    if (phoneError) {
+                        await sock.sendMessage(from, { text: phoneError });
+                        continue;
+                    }
                     session.data.leadTelefono = text;
                     session.step = STEPS.HORAS;
                     await sock.sendMessage(from, {
@@ -240,8 +289,8 @@ async function connectToWhatsApp() {
                 }
                 else if (session.step === STEPS.HORAS) {
                     const horas = parseInt(text, 10);
-                    if (isNaN(horas)) {
-                        await sock.sendMessage(from, { text: 'Ingresa solo un número válido.' });
+                    if (isNaN(horas) || String(horas) !== text.trim() || horas < 0 || horas > 999) {
+                        await sock.sendMessage(from, { text: '❌ "' + text + '" no es válido: debes responder solo con un número entero entre 0 y 999 (las horas), sin letras ni símbolos. Ej: 12' });
                         continue;
                     }
                     session.data.horasContacto = horas;
@@ -277,7 +326,7 @@ async function connectToWhatsApp() {
                 else if (session.step === STEPS.CAUSAL) {
                     const causalMatch = parseOption(text, validCausales);
                     if (!causalMatch) {
-                        await sock.sendMessage(from, { text: 'Causal no válida. Responde con el número:\n' + formatOptions(validCausales) });
+                        await sock.sendMessage(from, { text: '❌ "' + text + '" no es válido: no corresponde a ninguna causal de la lista. Responde solo con el número de la lista:\n' + formatOptions(validCausales) });
                         continue;
                     }
                     session.data.causal = causalMatch;
@@ -293,8 +342,8 @@ async function connectToWhatsApp() {
                 }
                 else if (session.step === STEPS.PERMANENCIA) {
                     const mesesP = parseInt(text, 10);
-                    if (isNaN(mesesP)) {
-                        await sock.sendMessage(from, { text: 'Ingresa solo un número válido.' });
+                    if (isNaN(mesesP) || String(mesesP) !== text.trim() || mesesP < 0 || mesesP > 600) {
+                        await sock.sendMessage(from, { text: '❌ "' + text + '" no es válido: debes responder solo con un número entero (los meses de permanencia), sin letras ni símbolos. Ej: 8' });
                         continue;
                     }
                     session.data.mesesPermanencia = mesesP;
@@ -334,7 +383,7 @@ async function connectToWhatsApp() {
                 }
                 else if (session.step === STEPS.DECLARACIONES) {
                     if (text.toLowerCase() !== 'acepto') {
-                        await sock.sendMessage(from, { text: 'Debes escribir "Acepto" para continuar.' });
+                        await sock.sendMessage(from, { text: '❌ "' + text + '" no es válido: para finalizar debes escribir exactamente *ACEPTO*, confirmando las 5 declaraciones anteriores.' });
                         continue;
                     }
                     await sock.sendMessage(from, { text: 'Procesando tu solicitud...' });
@@ -402,7 +451,7 @@ async function evaluateAndSave(data, from) {
         });
 
         await sock.sendMessage(from, {
-            text: '✅ Devolución ingresada (ID: ' + id + ').\n\nLos antecedentes pasarán por revisión interna. Respuesta a la brevedad. ¡Gracias!'
+            text: '✅ Devolución ingresada (ID: ' + id + ').\n\nGracias por informarlo. Se revisará y tendrás una respuesta en un máximo de 5 días hábiles.'
         });
 
         // Notificar al administrador
