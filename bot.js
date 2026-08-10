@@ -251,9 +251,19 @@ async function connectToWhatsApp() {
                 // Iniciar o reiniciar sesión
                 if (!sessions.has(from) || text.toLowerCase() === 'hola' || text.toLowerCase() === 'reiniciar') {
                     sessions.set(from, { step: STEPS.GREETING, data: {} });
-                    await sock.sendMessage(from, {
-                        text: '¡Hola! Soy el asistente de devoluciones de IAsapre 🤖.\nPor favor, indícame tu *nombre completo* (Ejecutivo):'
-                    });
+                    // Pequeña espera: cuando WhatsApp recién resuelve un @lid a su número real,
+                    // Baileys suele estar renegociando la sesión de cifrado (prekey bundle) en
+                    // ese instante. Responder de inmediato puede quedar "atascado". Esperamos
+                    // un poco para que la sesión termine de asentarse antes de enviar.
+                    await new Promise((r) => setTimeout(r, 1500));
+                    try {
+                        const sent = await sock.sendMessage(from, {
+                            text: '¡Hola! Soy el asistente de devoluciones de IAsapre 🤖.\nPor favor, indícame tu *nombre completo* (Ejecutivo):'
+                        });
+                        console.log('   -> Respuesta de saludo enviada a ' + from + '. id=' + (sent && sent.key && sent.key.id));
+                    } catch (sendErr) {
+                        console.log('   -> ERROR enviando saludo a ' + from + ': ' + sendErr.message);
+                    }
                     continue;
                 }
 
