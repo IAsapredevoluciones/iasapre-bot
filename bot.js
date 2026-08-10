@@ -225,13 +225,26 @@ async function connectToWhatsApp() {
         if (upsert.type !== 'notify') return;
 
         for (const msg of upsert.messages) {
-            console.log('   -> mensaje de ' + msg.key.remoteJid + ' (alt=' + (msg.key.remoteJidAlt || 'n/a') + ') fromMe=' + msg.key.fromMe + ' tieneContenido=' + !!msg.message);
+            console.log('   -> mensaje de ' + msg.key.remoteJid + ' (alt=' + (msg.key.remoteJidAlt || 'n/a') + ', senderPn=' + (msg.key.senderPn || 'n/a') + ') fromMe=' + msg.key.fromMe + ' tieneContenido=' + !!msg.message);
             try {
                 if (msg.key.fromMe) continue;
                 if (msg.key.remoteJid === 'status@broadcast') continue;
                 if (!msg.message) continue;
 
-                const from = msg.key.remoteJidAlt || msg.key.remoteJid;
+                let from = msg.key.remoteJidAlt || msg.key.senderPn || msg.key.remoteJid;
+                if (from && from.endsWith('@lid') && sock.signalRepository && sock.signalRepository.lidMapping && sock.signalRepository.lidMapping.getPNForLID) {
+                    try {
+                        const resolved = await sock.signalRepository.lidMapping.getPNForLID(from);
+                        if (resolved) {
+                            console.log('   -> LID resuelto via lidMapping: ' + from + ' -> ' + resolved);
+                            from = resolved;
+                        } else {
+                            console.log('   -> lidMapping no pudo resolver ' + from);
+                        }
+                    } catch (lidErr) {
+                        console.log('   -> Error resolviendo LID: ' + lidErr.message);
+                    }
+                }
                 const text = (getMessageText(msg) || '').trim();
                 const isMedia = messageHasMedia(msg);
 
@@ -396,7 +409,7 @@ async function connectToWhatsApp() {
             } catch (e) {
                 console.error('Error procesando mensaje:', e);
                 try {
-                    await sock.sendMessage(msg.key.remoteJidAlt || msg.key.remoteJid, {
+                    await sock.sendMessage(msg.key.remoteJidAlt || msg.key.senderPn || msg.key.remoteJid, {
                         text: '❌ Error: ' + (e.message || 'desconocido') + '\nEscribe "reiniciar" para volver a empezar.'
                     });
                 } catch (_) {}
