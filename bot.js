@@ -225,13 +225,13 @@ async function connectToWhatsApp() {
         if (upsert.type !== 'notify') return;
 
         for (const msg of upsert.messages) {
-            console.log('   -> mensaje de ' + msg.key.remoteJid + ' fromMe=' + msg.key.fromMe + ' tieneContenido=' + !!msg.message);
+            console.log('   -> mensaje de ' + msg.key.remoteJid + ' (alt=' + (msg.key.remoteJidAlt || 'n/a') + ') fromMe=' + msg.key.fromMe + ' tieneContenido=' + !!msg.message);
             try {
                 if (msg.key.fromMe) continue;
                 if (msg.key.remoteJid === 'status@broadcast') continue;
                 if (!msg.message) continue;
 
-                const from = msg.key.remoteJid;
+                const from = msg.key.remoteJidAlt || msg.key.remoteJid;
                 const text = (getMessageText(msg) || '').trim();
                 const isMedia = messageHasMedia(msg);
 
@@ -396,7 +396,7 @@ async function connectToWhatsApp() {
             } catch (e) {
                 console.error('Error procesando mensaje:', e);
                 try {
-                    await sock.sendMessage(msg.key.remoteJid, {
+                    await sock.sendMessage(msg.key.remoteJidAlt || msg.key.remoteJid, {
                         text: '❌ Error: ' + (e.message || 'desconocido') + '\nEscribe "reiniciar" para volver a empezar.'
                     });
                 } catch (_) {}
