@@ -1,31 +1,30 @@
 // ============================================================
-// BOT WHATSAPP IASAPRE - v2.0 (Baileys, sin Chromium)
-// Consume ~50MB de RAM. Funciona en Render Starter ($7/mes).
+// BOT WHATSAPP IASAPRE - v3.0 (WhatsApp Cloud API oficial de Meta)
+// Sin Baileys, sin QR, sin sesión que se corrompa. Webhook + Graph API.
 // ============================================================
 
-import makeWASocket from '@whiskeysockets/baileys';
-import { useMultiFileAuthState, DisconnectReason, downloadMediaMessage, getContentType } from '@whiskeysockets/baileys';
-import pkg from '@hapi/boom';
-const { Boom } = pkg;
-import pino from 'pino';
 import express from 'express';
 import cors from 'cors';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import QRCode from 'qrcode';
 import * as db from './database.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// ==========================================
+// 0. CONFIG
+// ==========================================
+const GRAPH_API_VERSION = 'v21.0';
+const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
+const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
+const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || 'iasapre_verify_token';
+const ADMIN_PHONE = process.env.ADMIN_PHONE || '56985380357';
+
+if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) {
+    console.warn('⚠️ Falta WHATSAPP_TOKEN o WHATSAPP_PHONE_NUMBER_ID en las variables de entorno. El bot no podrá enviar mensajes hasta que se configuren.');
+}
 
 // ==========================================
-// 1. SERVIDOR WEB (QR + API)
+// 1. SERVIDOR WEB (webhook + API)
 // ==========================================
 const app = express();
 const port = process.env.PORT || 10000;
-
-let currentQR = '';
-let botStatus = 'Iniciando servidor...';
 
 app.use(cors());
 app.use(express.json());
@@ -39,40 +38,48 @@ app.get('/api/returns', async (req, res) => {
     }
 });
 
-app.get('/qr', async (req, res) => {
-    if (botStatus === 'Conectado y listo') {
-        return res.send(
-            '<h1 style="text-align:center;margin-top:50px;color:green;font-family:sans-serif;">' +
-            '✅ El bot ya está conectado y funcionando.</h1>'
-        );
-    }
-    if (currentQR) {
-        try {
-            const qrDataUrl = await QRCode.toDataURL(currentQR);
-            return res.send(
-                '<div style="text-align:center;margin-top:50px;font-family:sans-serif;">' +
-                '<h2>Escanea este código con tu WhatsApp</h2>' +
-                '<img src="' + qrDataUrl + '" style="width:400px;height:400px;" />' +
-                '<p style="font-size:20px;">Estado: <b style="color:blue;">' + botStatus + '</b></p>' +
-                '<p><i>Se actualiza sola cada 10 segundos.</i></p>' +
-                '<script>setTimeout(function(){location.reload()},10000);</script>' +
-                '</div>'
-            );
-        } catch (e) {
-            return res.send('<h1>Error generando QR</h1>');
-        }
-    }
-    res.send(
-        '<div style="text-align:center;margin-top:50px;font-family:sans-serif;">' +
-        '<h1>Estado: <span style="color:orange;">' + botStatus + '</span></h1>' +
-        '<p>Espera, se recarga sola...</p>' +
-        '<script>setTimeout(function(){location.reload()},5000);</script>' +
-        '</div>'
-    );
+app.get('/health', (req, res) => {
+    res.json({ status: 'ok', bot: 'Cloud API activo', phoneNumberId: PHONE_NUMBER_ID || null });
 });
 
-app.get('/health', (req, res) => {
-    res.json({ status: 'ok', bot: botStatus });
+// Verificación del webhook (Meta llama esto una vez al configurar la suscripción)
+app.get('/webhook', (req, res) => {
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+
+    if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+        console.log('✅ Webhook verificado por Meta.');
+        return res.status(200).send(challenge);
+    }
+    console.log('❌ Verificación de webhook rechazada (token no coincide).');
+    return res.sendStatus(403);
+});
+
+// Recepción de mensajes entrantes
+app.post('/webhook', async (req, res) => {
+    // Meta espera una respuesta 200 rápida; si no, reintenta la entrega.
+    res.sendStatus(200);
+    try {
+        const body = req.body;
+        if (!body || body.object !== 'whatsapp_business_account') return;
+
+        for (const entry of body.entry || []) {
+            for (const change of entry.changes || []) {
+                const value = change.value || {};
+                const messages = value.messages || [];
+                for (const msg of messages) {
+                    if (hasProcessed(msg.id)) continue;
+                    markProcessed(msg.id);
+                    handleIncomingMessage(msg).catch((e) => {
+                        console.error('Error manejando mensaje entrante:', e);
+                    });
+                }
+            }
+        }
+    } catch (e) {
+        console.error('Error procesando webhook:', e);
+    }
 });
 
 app.listen(port, () => {
@@ -80,7 +87,64 @@ app.listen(port, () => {
 });
 
 // ==========================================
-// 2. LÓGICA DEL BOT (BAILEYS)
+// 2. UTILIDADES DE ENVÍO / DESCARGA (GRAPH API)
+// ==========================================
+async function sendText(to, text) {
+    const res = await fetch('https://graph.facebook.com/' + GRAPH_API_VERSION + '/' + PHONE_NUMBER_ID + '/messages', {
+        method: 'POST',
+        headers: {
+            'Authorization': 'Bearer ' + WHATSAPP_TOKEN,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            messaging_product: 'whatsapp',
+            to,
+            type: 'text',
+            text: { body: text }
+        })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        console.error('   -> ERROR enviando mensaje a ' + to + ': ' + JSON.stringify(data));
+        throw new Error((data.error && data.error.message) || 'Error enviando mensaje');
+    }
+    console.log('   -> Mensaje enviado a ' + to + '. id=' + (data.messages && data.messages[0] && data.messages[0].id));
+    return data;
+}
+
+async function downloadMedia(mediaId) {
+    const metaRes = await fetch('https://graph.facebook.com/' + GRAPH_API_VERSION + '/' + mediaId, {
+        headers: { 'Authorization': 'Bearer ' + WHATSAPP_TOKEN }
+    });
+    const meta = await metaRes.json();
+    if (!metaRes.ok) throw new Error((meta.error && meta.error.message) || 'Error obteniendo metadata de media');
+
+    const fileRes = await fetch(meta.url, {
+        headers: { 'Authorization': 'Bearer ' + WHATSAPP_TOKEN }
+    });
+    if (!fileRes.ok) throw new Error('Error descargando archivo de media (status ' + fileRes.status + ')');
+
+    const arrayBuffer = await fileRes.arrayBuffer();
+    return { buffer: Buffer.from(arrayBuffer), mimeType: meta.mime_type || 'application/octet-stream' };
+}
+
+// Dedup simple de mensajes (Meta puede reenviar el mismo webhook)
+const processedIds = new Set();
+function hasProcessed(id) {
+    return id ? processedIds.has(id) : false;
+}
+function markProcessed(id) {
+    if (!id) return;
+    processedIds.add(id);
+    if (processedIds.size > 500) {
+        const keep = Array.from(processedIds).slice(-200);
+        processedIds.clear();
+        keep.forEach((x) => processedIds.add(x));
+    }
+}
+
+// ==========================================
+// 3. LÓGICA DEL BOT (sesiones y validaciones)
 // ==========================================
 const sessions = new Map();
 
@@ -163,273 +227,177 @@ function validatePhone(text) {
 }
 
 function getMessageText(msg) {
-    if (!msg.message) return '';
-    const type = getContentType(msg.message);
-    if (type === 'conversation') return msg.message.conversation || '';
-    if (type === 'extendedTextMessage') return (msg.message.extendedTextMessage || {}).text || '';
-    if (type === 'imageMessage') return (msg.message.imageMessage || {}).caption || '';
-    if (type === 'documentMessage') return (msg.message.documentMessage || {}).caption || '';
+    if (msg.type === 'text') return (msg.text && msg.text.body) || '';
+    if (msg.type === 'image') return (msg.image && msg.image.caption) || '';
+    if (msg.type === 'document') return (msg.document && msg.document.caption) || '';
+    if (msg.type === 'video') return (msg.video && msg.video.caption) || '';
     return '';
 }
 
 function messageHasMedia(msg) {
-    if (!msg.message) return false;
-    const type = getContentType(msg.message);
-    return type === 'imageMessage' || type === 'videoMessage' || type === 'documentMessage';
+    return msg.type === 'image' || msg.type === 'video' || msg.type === 'document';
 }
 
-let sock = null;
+function getMediaId(msg) {
+    if (msg.type === 'image') return msg.image && msg.image.id;
+    if (msg.type === 'video') return msg.video && msg.video.id;
+    if (msg.type === 'document') return msg.document && msg.document.id;
+    return null;
+}
 
-async function connectToWhatsApp() {
-    const authDir = path.join(__dirname, 'auth_info');
-    const { state, saveCreds } = await useMultiFileAuthState(authDir);
+async function handleIncomingMessage(msg) {
+    const from = msg.from; // número en formato E.164 sin '+', ej: 56912345678
+    console.log('📩 Mensaje de ' + from + ' tipo=' + msg.type);
 
-    sock = makeWASocket.default
-        ? makeWASocket.default({ auth: state, printQRInTerminal: true, logger: pino({ level: 'silent' }), browser: ['IAsapre Bot', 'Chrome', '22.0'], connectTimeoutMs: 60000, defaultQueryTimeoutMs: 0, keepAliveIntervalMs: 30000, markOnlineOnConnect: true })
-        : makeWASocket({ auth: state, printQRInTerminal: true, logger: pino({ level: 'silent' }), browser: ['IAsapre Bot', 'Chrome', '22.0'], connectTimeoutMs: 60000, defaultQueryTimeoutMs: 0, keepAliveIntervalMs: 30000, markOnlineOnConnect: true });
+    try {
+        const text = (getMessageText(msg) || '').trim();
+        const isMedia = messageHasMedia(msg);
 
-    sock.ev.on('creds.update', saveCreds);
-
-    sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect, qr } = update;
-
-        if (qr) {
-            currentQR = qr;
-            botStatus = 'Esperando escaneo de QR...';
-            console.log('📱 QR generado. Escanéalo en /qr');
+        // Iniciar o reiniciar sesión
+        if (!sessions.has(from) || text.toLowerCase() === 'hola' || text.toLowerCase() === 'reiniciar') {
+            sessions.set(from, { step: STEPS.GREETING, data: {} });
+            await sendText(from, '¡Hola! Soy el asistente de devoluciones de IAsapre 🤖.\nPor favor, indícame tu *nombre completo* (Ejecutivo):');
+            return;
         }
 
-        if (connection === 'close') {
-            currentQR = '';
-            const boom = new Boom(lastDisconnect?.error);
-            const code = boom.output?.statusCode || 0;
-            const reconnect = code !== DisconnectReason.loggedOut;
-            console.log('⚠️ Conexión cerrada (código ' + code + '). Reconectar: ' + reconnect);
-            botStatus = 'Reconectando...';
-            if (reconnect) {
-                setTimeout(connectToWhatsApp, 500);
-            } else {
-                botStatus = 'Sesión cerrada. Reinicia el servidor.';
+        const session = sessions.get(from);
+
+        if (session.step === STEPS.GREETING) {
+            if (!isValidName(text)) {
+                await sendText(from, nameErrorMessage(text, 'tu nombre completo (Ejecutivo)'));
+                return;
             }
+            session.data.ejecutivo = text;
+            session.step = STEPS.MES;
+            await sendText(from, 'Gracias, ' + text + '. ¿A qué *mes* corresponde esta devolución?\nResponde con el número:\n' + formatOptions(validMeses));
         }
-
-        if (connection === 'open') {
-            currentQR = '';
-            botStatus = 'Conectado y listo';
-            console.log('✅ Bot conectado y listo.');
+        else if (session.step === STEPS.MES) {
+            const mesMatch = parseOption(text, validMeses);
+            if (!mesMatch) {
+                await sendText(from, '❌ "' + text + '" no es válido: no corresponde a ninguna opción de mes. Responde solo con el número de la lista:\n' + formatOptions(validMeses));
+                return;
+            }
+            session.data.mes = mesMatch;
+            session.data.bolsa = 'N/A';
+            session.step = STEPS.LEAD_NOMBRE;
+            await sendText(from, 'Indícame el *nombre completo del lead*:');
         }
-    });
-
-    sock.ev.on('messages.upsert', async (upsert) => {
-        console.log('📩 messages.upsert recibido. type=' + upsert.type + ' cantidad=' + upsert.messages.length);
-        if (upsert.type !== 'notify') return;
-
-        for (const msg of upsert.messages) {
-            console.log('   -> mensaje de ' + msg.key.remoteJid + ' (alt=' + (msg.key.remoteJidAlt || 'n/a') + ', senderPn=' + (msg.key.senderPn || 'n/a') + ') fromMe=' + msg.key.fromMe + ' tieneContenido=' + !!msg.message);
+        else if (session.step === STEPS.LEAD_NOMBRE) {
+            if (!isValidName(text)) {
+                await sendText(from, nameErrorMessage(text, 'el nombre completo del lead'));
+                return;
+            }
+            session.data.leadNombre = text;
+            session.step = STEPS.LEAD_TELEFONO;
+            await sendText(from, 'Indícame el *número de teléfono* del lead:');
+        }
+        else if (session.step === STEPS.LEAD_TELEFONO) {
+            const phoneError = validatePhone(text);
+            if (phoneError) {
+                await sendText(from, phoneError);
+                return;
+            }
+            session.data.leadTelefono = text;
+            session.step = STEPS.HORAS;
+            await sendText(from, '¿Cuántas *horas* pasaron desde que recibiste el lead hasta que lo contactaste? (Solo el número, ej: 12):');
+        }
+        else if (session.step === STEPS.HORAS) {
+            const horas = parseInt(text, 10);
+            if (isNaN(horas) || String(horas) !== text.trim() || horas < 0 || horas > 999) {
+                await sendText(from, '❌ "' + text + '" no es válido: debes responder solo con un número entero entre 0 y 999 (las horas), sin letras ni símbolos. Ej: 12');
+                return;
+            }
+            session.data.horasContacto = horas;
+            session.step = STEPS.PROOF_CONTACTO;
+            await sendText(from, 'Envía una *imagen* (captura) que acredite el contacto dentro de ese tiempo:');
+        }
+        else if (session.step === STEPS.PROOF_CONTACTO) {
+            if (!isMedia) {
+                await sendText(from, 'No recibí una imagen. Envía el archivo adjunto.');
+                return;
+            }
             try {
-                if (msg.key.fromMe) continue;
-                if (msg.key.remoteJid === 'status@broadcast') continue;
-                if (!msg.message) continue;
-
-                let from = msg.key.remoteJidAlt || msg.key.senderPn || msg.key.remoteJid;
-                if (from && from.endsWith('@lid') && sock.signalRepository && sock.signalRepository.lidMapping && sock.signalRepository.lidMapping.getPNForLID) {
-                    try {
-                        const resolved = await sock.signalRepository.lidMapping.getPNForLID(from);
-                        if (resolved) {
-                            console.log('   -> LID resuelto via lidMapping: ' + from + ' -> ' + resolved);
-                            from = resolved;
-                        } else {
-                            console.log('   -> lidMapping no pudo resolver ' + from);
-                        }
-                    } catch (lidErr) {
-                        console.log('   -> Error resolviendo LID: ' + lidErr.message);
-                    }
-                }
-                const text = (getMessageText(msg) || '').trim();
-                const isMedia = messageHasMedia(msg);
-
-                // Iniciar o reiniciar sesión
-                if (!sessions.has(from) || text.toLowerCase() === 'hola' || text.toLowerCase() === 'reiniciar') {
-                    sessions.set(from, { step: STEPS.GREETING, data: {} });
-                    // Pequeña espera: cuando WhatsApp recién resuelve un @lid a su número real,
-                    // Baileys suele estar renegociando la sesión de cifrado (prekey bundle) en
-                    // ese instante. Responder de inmediato puede quedar "atascado". Esperamos
-                    // un poco para que la sesión termine de asentarse antes de enviar.
-                    await new Promise((r) => setTimeout(r, 1500));
-                    try {
-                        const sent = await sock.sendMessage(from, {
-                            text: '¡Hola! Soy el asistente de devoluciones de IAsapre 🤖.\nPor favor, indícame tu *nombre completo* (Ejecutivo):'
-                        });
-                        console.log('   -> Respuesta de saludo enviada a ' + from + '. id=' + (sent && sent.key && sent.key.id));
-                    } catch (sendErr) {
-                        console.log('   -> ERROR enviando saludo a ' + from + ': ' + sendErr.message);
-                    }
-                    continue;
-                }
-
-                const session = sessions.get(from);
-
-                if (session.step === STEPS.GREETING) {
-                    if (!isValidName(text)) {
-                        await sock.sendMessage(from, { text: nameErrorMessage(text, 'tu nombre completo (Ejecutivo)') });
-                        continue;
-                    }
-                    session.data.ejecutivo = text;
-                    session.step = STEPS.MES;
-                    await sock.sendMessage(from, {
-                        text: 'Gracias, ' + text + '. ¿A qué *mes* corresponde esta devolución?\nResponde con el número:\n' + formatOptions(validMeses)
-                    });
-                }
-                else if (session.step === STEPS.MES) {
-                    const mesMatch = parseOption(text, validMeses);
-                    if (!mesMatch) {
-                        await sock.sendMessage(from, { text: '❌ "' + text + '" no es válido: no corresponde a ninguna opción de mes. Responde solo con el número de la lista:\n' + formatOptions(validMeses) });
-                        continue;
-                    }
-                    session.data.mes = mesMatch;
-                    session.data.bolsa = 'N/A';
-                    session.step = STEPS.LEAD_NOMBRE;
-                    await sock.sendMessage(from, { text: 'Indícame el *nombre completo del lead*:' });
-                }
-                else if (session.step === STEPS.LEAD_NOMBRE) {
-                    if (!isValidName(text)) {
-                        await sock.sendMessage(from, { text: nameErrorMessage(text, 'el nombre completo del lead') });
-                        continue;
-                    }
-                    session.data.leadNombre = text;
-                    session.step = STEPS.LEAD_TELEFONO;
-                    await sock.sendMessage(from, { text: 'Indícame el *número de teléfono* del lead:' });
-                }
-                else if (session.step === STEPS.LEAD_TELEFONO) {
-                    const phoneError = validatePhone(text);
-                    if (phoneError) {
-                        await sock.sendMessage(from, { text: phoneError });
-                        continue;
-                    }
-                    session.data.leadTelefono = text;
-                    session.step = STEPS.HORAS;
-                    await sock.sendMessage(from, {
-                        text: '¿Cuántas *horas* pasaron desde que recibiste el lead hasta que lo contactaste? (Solo el número, ej: 12):'
-                    });
-                }
-                else if (session.step === STEPS.HORAS) {
-                    const horas = parseInt(text, 10);
-                    if (isNaN(horas) || String(horas) !== text.trim() || horas < 0 || horas > 999) {
-                        await sock.sendMessage(from, { text: '❌ "' + text + '" no es válido: debes responder solo con un número entero entre 0 y 999 (las horas), sin letras ni símbolos. Ej: 12' });
-                        continue;
-                    }
-                    session.data.horasContacto = horas;
-                    session.step = STEPS.PROOF_CONTACTO;
-                    await sock.sendMessage(from, {
-                        text: 'Envía una *imagen* (captura) que acredite el contacto dentro de ese tiempo:'
-                    });
-                }
-                else if (session.step === STEPS.PROOF_CONTACTO) {
-                    if (!isMedia) {
-                        await sock.sendMessage(from, { text: 'No recibí una imagen. Envía el archivo adjunto.' });
-                        continue;
-                    }
-                    try {
-                        const buffer1 = await downloadMediaMessage(msg, 'buffer', {}, {
-                            logger: pino({ level: 'silent' }),
-                            reuploadRequest: sock.updateMediaMessage
-                        });
-                        const type1 = getContentType(msg.message);
-                        const mime1 = msg.message[type1]?.mimetype || 'image/jpeg';
-                        const ext1 = (mime1.split('/')[1] || 'jpg').split(';')[0];
-                        const name1 = 'contacto_' + from.split('@')[0] + '_' + Date.now() + '.' + ext1;
-                        const url1 = await db.uploadFile(name1, buffer1, mime1);
-                        session.data.urlContacto = url1;
-                    } catch (dlErr) {
-                        console.error('Error descargando media:', dlErr.message);
-                    }
-                    session.step = STEPS.CAUSAL;
-                    await sock.sendMessage(from, {
-                        text: 'Imagen recibida ✅. ¿Cuál es la *causal*?\nResponde con el número:\n' + formatOptions(validCausales)
-                    });
-                }
-                else if (session.step === STEPS.CAUSAL) {
-                    const causalMatch = parseOption(text, validCausales);
-                    if (!causalMatch) {
-                        await sock.sendMessage(from, { text: '❌ "' + text + '" no es válido: no corresponde a ninguna causal de la lista. Responde solo con el número de la lista:\n' + formatOptions(validCausales) });
-                        continue;
-                    }
-                    session.data.causal = causalMatch;
-                    if (causalMatch === 'Falta de anualidad') {
-                        session.step = STEPS.PERMANENCIA;
-                        await sock.sendMessage(from, { text: 'Ingresa los meses de *permanencia* del afiliado (ej: 8):' });
-                    } else {
-                        session.step = STEPS.PROOF_CAUSAL;
-                        await sock.sendMessage(from, {
-                            text: 'Envía el documento o captura que *acredite* esta causal (y mensaje de cierre si aplica):'
-                        });
-                    }
-                }
-                else if (session.step === STEPS.PERMANENCIA) {
-                    const mesesP = parseInt(text, 10);
-                    if (isNaN(mesesP) || String(mesesP) !== text.trim() || mesesP < 0 || mesesP > 600) {
-                        await sock.sendMessage(from, { text: '❌ "' + text + '" no es válido: debes responder solo con un número entero (los meses de permanencia), sin letras ni símbolos. Ej: 8' });
-                        continue;
-                    }
-                    session.data.mesesPermanencia = mesesP;
-                    session.step = STEPS.PROOF_CAUSAL;
-                    await sock.sendMessage(from, {
-                        text: 'Envía el documento o captura que *acredite* esta causal (y mensaje de cierre):'
-                    });
-                }
-                else if (session.step === STEPS.PROOF_CAUSAL) {
-                    if (!isMedia) {
-                        await sock.sendMessage(from, { text: 'Por favor envía el archivo adjunto.' });
-                        continue;
-                    }
-                    try {
-                        const buffer2 = await downloadMediaMessage(msg, 'buffer', {}, {
-                            logger: pino({ level: 'silent' }),
-                            reuploadRequest: sock.updateMediaMessage
-                        });
-                        const type2 = getContentType(msg.message);
-                        const mime2 = msg.message[type2]?.mimetype || 'image/jpeg';
-                        const ext2 = (mime2.split('/')[1] || 'jpg').split(';')[0];
-                        const name2 = 'causal_' + from.split('@')[0] + '_' + Date.now() + '.' + ext2;
-                        const url2 = await db.uploadFile(name2, buffer2, mime2);
-                        session.data.urlCausal = url2;
-                    } catch (dlErr2) {
-                        console.error('Error descargando media:', dlErr2.message);
-                    }
-                    session.step = STEPS.DECLARACIONES;
-                    await sock.sendMessage(from, {
-                        text: 'Para finalizar, escribe *ACEPTO* para confirmar:\n' +
-                            '1. Contacté al cotizante en < 24h.\n' +
-                            '2. La información es veraz.\n' +
-                            '3. Envié mensaje de cierre.\n' +
-                            '4. No volveré a contactar a este lead.\n' +
-                            '5. No usaré los datos para otros fines.'
-                    });
-                }
-                else if (session.step === STEPS.DECLARACIONES) {
-                    if (text.toLowerCase() !== 'acepto') {
-                        await sock.sendMessage(from, { text: '❌ "' + text + '" no es válido: para finalizar debes escribir exactamente *ACEPTO*, confirmando las 5 declaraciones anteriores.' });
-                        continue;
-                    }
-                    await sock.sendMessage(from, { text: 'Procesando tu solicitud...' });
-                    await evaluateAndSave(session.data, from);
-                    sessions.delete(from);
-                }
-
-            } catch (e) {
-                console.error('Error procesando mensaje:', e);
-                try {
-                    await sock.sendMessage(msg.key.remoteJidAlt || msg.key.senderPn || msg.key.remoteJid, {
-                        text: '❌ Error: ' + (e.message || 'desconocido') + '\nEscribe "reiniciar" para volver a empezar.'
-                    });
-                } catch (_) {}
+                const mediaId = getMediaId(msg);
+                const { buffer, mimeType } = await downloadMedia(mediaId);
+                const ext1 = (mimeType.split('/')[1] || 'jpg').split(';')[0];
+                const name1 = 'contacto_' + from + '_' + Date.now() + '.' + ext1;
+                const url1 = await db.uploadFile(name1, buffer, mimeType);
+                session.data.urlContacto = url1;
+            } catch (dlErr) {
+                console.error('Error descargando media:', dlErr.message);
+            }
+            session.step = STEPS.CAUSAL;
+            await sendText(from, 'Imagen recibida ✅. ¿Cuál es la *causal*?\nResponde con el número:\n' + formatOptions(validCausales));
+        }
+        else if (session.step === STEPS.CAUSAL) {
+            const causalMatch = parseOption(text, validCausales);
+            if (!causalMatch) {
+                await sendText(from, '❌ "' + text + '" no es válido: no corresponde a ninguna causal de la lista. Responde solo con el número de la lista:\n' + formatOptions(validCausales));
+                return;
+            }
+            session.data.causal = causalMatch;
+            if (causalMatch === 'Falta de anualidad') {
+                session.step = STEPS.PERMANENCIA;
+                await sendText(from, 'Ingresa los meses de *permanencia* del afiliado (ej: 8):');
+            } else {
+                session.step = STEPS.PROOF_CAUSAL;
+                await sendText(from, 'Envía el documento o captura que *acredite* esta causal (y mensaje de cierre si aplica):');
             }
         }
-    });
+        else if (session.step === STEPS.PERMANENCIA) {
+            const mesesP = parseInt(text, 10);
+            if (isNaN(mesesP) || String(mesesP) !== text.trim() || mesesP < 0 || mesesP > 600) {
+                await sendText(from, '❌ "' + text + '" no es válido: debes responder solo con un número entero (los meses de permanencia), sin letras ni símbolos. Ej: 8');
+                return;
+            }
+            session.data.mesesPermanencia = mesesP;
+            session.step = STEPS.PROOF_CAUSAL;
+            await sendText(from, 'Envía el documento o captura que *acredite* esta causal (y mensaje de cierre):');
+        }
+        else if (session.step === STEPS.PROOF_CAUSAL) {
+            if (!isMedia) {
+                await sendText(from, 'Por favor envía el archivo adjunto.');
+                return;
+            }
+            try {
+                const mediaId = getMediaId(msg);
+                const { buffer, mimeType } = await downloadMedia(mediaId);
+                const ext2 = (mimeType.split('/')[1] || 'jpg').split(';')[0];
+                const name2 = 'causal_' + from + '_' + Date.now() + '.' + ext2;
+                const url2 = await db.uploadFile(name2, buffer, mimeType);
+                session.data.urlCausal = url2;
+            } catch (dlErr2) {
+                console.error('Error descargando media:', dlErr2.message);
+            }
+            session.step = STEPS.DECLARACIONES;
+            await sendText(from,
+                'Para finalizar, escribe *ACEPTO* para confirmar:\n' +
+                '1. Contacté al cotizante en < 24h.\n' +
+                '2. La información es veraz.\n' +
+                '3. Envié mensaje de cierre.\n' +
+                '4. No volveré a contactar a este lead.\n' +
+                '5. No usaré los datos para otros fines.'
+            );
+        }
+        else if (session.step === STEPS.DECLARACIONES) {
+            if (text.toLowerCase() !== 'acepto') {
+                await sendText(from, '❌ "' + text + '" no es válido: para finalizar debes escribir exactamente *ACEPTO*, confirmando las 5 declaraciones anteriores.');
+                return;
+            }
+            await sendText(from, 'Procesando tu solicitud...');
+            await evaluateAndSave(session.data, from);
+            sessions.delete(from);
+        }
+    } catch (e) {
+        console.error('Error procesando mensaje:', e);
+        try {
+            await sendText(from, '❌ Error: ' + (e.message || 'desconocido') + '\nEscribe "reiniciar" para volver a empezar.');
+        } catch (_) {}
+    }
 }
 
 // ==========================================
-// 3. EVALUACIÓN Y GUARDADO
+// 4. EVALUACIÓN Y GUARDADO
 // ==========================================
 async function evaluateAndSave(data, from) {
     let estado = 'PREAPROBADA';
@@ -441,7 +409,7 @@ async function evaluateAndSave(data, from) {
     } else if (data.causal === 'Falta de anualidad' && data.mesesPermanencia >= 10) {
         estado = 'RECHAZADA';
         motivo = 'Permanencia de ' + data.mesesPermanencia + ' meses (Máximo 9).';
-    } else if (data.causal === 'Whatsapp Invalido') {
+    } else if (data.causal === 'Whatsapp Inválido') {
         estado = 'REEMPLAZO';
         motivo = 'Número inválido. Será reemplazado (NO consume devolución).';
     }
@@ -470,43 +438,33 @@ async function evaluateAndSave(data, from) {
             mesesPermanencia: data.mesesPermanencia || null,
             estado, motivo,
             comprobantes: JSON.stringify({
-                contacto: data.urlContacto || null,
+               contacto: data.urlContacto || null,
                 causal: data.urlCausal || null
             })
         });
 
-        await sock.sendMessage(from, {
-            text: '✅ Devolución ingresada (ID: ' + id + ').\n\nGracias por informarlo. Se revisará y tendrás una respuesta en un máximo de 5 días hábiles.\n\nAnte cualquier duda, escribe a Nicolás Larraín: +56985380357 o nico@iasapre.cl'
-        });
+        await sendText(from, '✅ Devolución ingresada (ID: ' + id + ').\n\nGracias por informarlo. Se revisará y tendrás una respuesta en un máximo de 5 días hábiles.\n\nAnte cualquier duda, escribe a Nicolás Larraín: +56985380357 o nico@iasapre.cl');
 
         // Notificar al administrador
-        const adminJid = '56985380357@s.whatsapp.net';
         const adjuntos = [];
         if (data.urlContacto) adjuntos.push('Contacto: ' + data.urlContacto);
         if (data.urlCausal) adjuntos.push('Causal: ' + data.urlCausal);
         const adjStr = adjuntos.length > 0 ? '\n*Adjuntos:*\n' + adjuntos.join('\n') : '';
 
-        await sock.sendMessage(adminJid, {
-            text: '🚨 *NUEVA DEVOLUCIÓN*\n\n' +
-                '*ID:* ' + id + '\n' +
-                '*Ejecutivo:* ' + data.ejecutivo + '\n' +
-                '*Lead:* ' + data.leadNombre + ' (' + data.leadTelefono + ')\n' +
-                '*Mes:* ' + data.mes + '\n' +
-                '*Causal:* ' + data.causal + '\n' +
-                '*Horas:* ' + data.horasContacto + 'h\n' +
-                '*Permanencia:* ' + (data.mesesPermanencia || 'N/A') + '\n\n' +
-                '*Evaluación:* ' + estado + '\n' +
-                '*Motivo:* ' + motivo + adjStr
-        });
+        await sendText(ADMIN_PHONE,
+            '🚨 *NUEVA DEVOLUCIÓN*\n\n' +
+            '*ID:* ' + id + '\n' +
+            '*Ejecutivo:* ' + data.ejecutivo + '\n' +
+            '*Lead:* ' + data.leadNombre + ' (' + data.leadTelefono + ')\n' +
+            '*Mes:* ' + data.mes + '\n' +
+            '*Causal:* ' + data.causal + '\n' +
+            '*Horas:* ' + data.horasContacto + 'h\n' +
+            '*Permanencia:* ' + (data.mesesPermanencia || 'N/A') + '\n\n' +
+            '*Evaluación:* ' + estado + '\n' +
+            '*Motivo:* ' + motivo + adjStr
+        );
     } catch (err) {
         console.error('Error guardando:', err);
-        await sock.sendMessage(from, {
-            text: '❌ Error al guardar. Escribe "reiniciar" para intentar de nuevo.'
-        });
+        await sendText(from, '❌ Error al guardar. Escribe "reiniciar" para intentar de nuevo.');
     }
 }
-
-// ==========================================
-// 4. ARRANCAR
-// ==========================================
-connectToWhatsApp();
