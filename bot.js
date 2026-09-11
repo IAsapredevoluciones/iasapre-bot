@@ -42,6 +42,11 @@ app.get('/health', (req, res) => {
     res.json({ status: 'ok', bot: 'Cloud API activo', phoneNumberId: PHONE_NUMBER_ID || null });
 });
 
+app.get('/politica-privacidad', (req, res) => {
+    res.type('html').send('<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Politica de Privacidad - IAsapre</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family:Arial,sans-serif;max-width:700px;margin:40px auto;padding:0 20px;line-height:1.6;color:#222}h1{color:#0a6}</style></head><body><h1>Politica de Privacidad - IAsapre</h1><p>Ultima actualizacion: 11 de septiembre de 2026</p><p>IAsapre ofrece un servicio de asesoria gratuita para comparar y evaluar planes de salud (Isapre) en Chile, incluyendo comunicacion por WhatsApp.</p><h2>Informacion que recopilamos</h2><p>Recopilamos los datos que nos entregas voluntariamente al contactarnos: nombre, telefono, correo electronico, edad, region, prevision de salud actual y otra informacion relevante para la asesoria.</p><h2>Uso de la informacion</h2><p>Usamos tu informacion unicamente para contactarte, entregarte asesoria sobre planes de salud y dar seguimiento a tu solicitud. No vendemos ni compartimos tus datos con terceros no relacionados con el servicio.</p><h2>WhatsApp Business API</h2><p>Utilizamos la API oficial de WhatsApp Business (Meta) para comunicarnos contigo. Los mensajes se procesan conforme a las politicas de Meta y se almacenan de forma segura para dar curso a tu solicitud.</p><h2>Confidencialidad</h2><p>Tus datos son tratados de forma confidencial y solo son accedidos por personal autorizado de IAsapre.</p><h2>Tus derechos</h2><p>Puedes solicitar la eliminacion o correccion de tus datos personales escribiendo a contacto@iasapre.cl.</p><h2>Contacto</h2><p>Para cualquier consulta sobre esta politica, escribenos a contacto@iasapre.cl.</p></body></html>');
+});
+
+
 // Verificación del webhook (Meta llama esto una vez al configurar la suscripción)
 app.get('/webhook', (req, res) => {
     const mode = req.query['hub.mode'];
