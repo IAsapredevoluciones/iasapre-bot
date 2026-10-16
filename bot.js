@@ -1,5 +1,5 @@
 // ============================================================
-// BOT WHATSAPP IASAPRE - v3.0 (WhatsApp Cloud API oficial de Meta)
+// BOT WHATSAPP IASAPRE - v4.0 (WhatsApp Cloud API oficial de Meta)
 // Sin Baileys, sin QR, sin sesion que se corrompa. Webhook + Graph API.
 // ============================================================
 
@@ -246,6 +246,80 @@ if (msg.type === 'video') return msg.video && msg.video.id;
 if (msg.type === 'document') return msg.document && msg.document.id;
 return null;
 }
+async function saveProof(msg, from, prefix) {
+const mediaId = getMediaId(msg);
+if (!mediaId) throw new Error('Mensaje sin archivo');
+const { buffer, mimeType } = await downloadMedia(mediaId);
+const ext = (mimeType.split('/')[1] || 'jpg').split(';')[0];
+const name = prefix + '_' + from + '_' + Date.now() + '.' + ext;
+const url = await db.uploadFile(name, buffer, mimeType);
+if (!url) throw new Error('No se pudo guardar el archivo');
+return url;
+}
+
+function formatFecha(iso) {
+return new Date(iso).toLocaleString('es-CL', { timeZone: 'America/Santiago', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+function chunkMessages(blocks, maxLen) {
+const out = [];
+let cur = '';
+for (const b of blocks) {
+if (cur.length + b.length + 2 > maxLen && cur) { out.push(cur); cur = ''; }
+cur += (cur ? '\n\n' : '') + b;
+}
+if (cur) out.push(cur);
+return out;
+}
+
+// Comandos del administrador (solo ADMIN_PHONE). Al escribir al bot se abre la ventana de 24h de Meta.
+async function handleAdminCommand(text, from) {
+const t = text.trim();
+if (/^(pendientes|resumen|ayuda)$/i.test(t)) {
+const all = await db.getAllReturns();
+const count = (e) => all.filter((r) => r.estado === e).length;
+const pend = all.filter((r) => r.estado === 'PREAPROBADA').sort((a, b) => new Date(a.fecha) - new Date(b.fecha));
+let head = '*RESUMEN DEVOLUCIONES*\n' +
+'Total: ' + all.length + '\n' +
+'Pendientes de tu revision (PREAPROBADA): ' + pend.length + '\n' +
+'Aprobadas: ' + count('APROBADA') + '\n' +
+'Rechazadas: ' + count('RECHAZADA') + '\n' +
+'Reemplazo (numero invalido): ' + count('REEMPLAZO') + '\n\n' +
+'Comandos: *pendientes*, *aprobar RET-XXXX*, *rechazar RET-XXXX motivo*';
+await sendText(from, head);
+if (/^pendientes$/i.test(t) && pend.length > 0) {
+let comp;
+const blocks = pend.map((r) => {
+try { comp = JSON.parse(r.comprobantes || '{}'); } catch (_) { comp = {}; }
+return '*' + r.id + '* (' + formatFecha(r.fecha) + ')\n' +
+'Ejecutivo: ' + r.ejecutivo + '\n' +
+'Lead: ' + r.leadnombre + ' (' + r.leadtelefono + ')\n' +
+'Mes: ' + r.mes + ' | Causal: ' + r.causal + ' | Horas: ' + r.horascontacto + '\n' +
+'Contacto: ' + (comp.contacto || 'SIN ARCHIVO') + '\n' +
+'Causal: ' + (comp.causal || 'SIN ARCHIVO');
+});
+for (const m of chunkMessages(blocks, 3300)) await sendText(from, m);
+}
+return true;
+}
+const m = t.match(/^(aprobar|rechazar)\s+(RET-[A-Za-z0-9]+)\s*(.*)$/i);
+if (m) {
+const accion = m[1].toLowerCase();
+const id = m[2].toUpperCase();
+const motivo = (m[3] || '').trim();
+const nuevo = accion === 'aprobar' ? 'APROBADA' : 'RECHAZADA';
+const mot = accion === 'aprobar' ? (motivo || 'Aprobada por administrador.') : (motivo || 'Rechazada por administrador.');
+const updated = await db.updateReturnStatus(id, nuevo, mot);
+if (!updated) {
+await sendText(from, 'No encontre la devolucion ' + id + '. Revisa el ID.');
+} else {
+await sendText(from, id + ' queda *' + nuevo + '*. Ejecutivo: ' + updated.ejecutivo + '. Lead: ' + updated.leadnombre + '.');
+}
+return true;
+}
+return false;
+}
+
 async function handleIncomingMessage(msg) {
 const from = msg.from;
 console.log('Mensaje de ' + from + ' tipo=' + msg.type);
@@ -253,6 +327,8 @@ console.log('Mensaje de ' + from + ' tipo=' + msg.type);
 try {
 const text = (getMessageText(msg) || '').trim();
 const isMedia = messageHasMedia(msg);
+
+if (from === ADMIN_PHONE && text && (await handleAdminCommand(text, from))) return;
 
 if (!sessions.has(from) || text.toLowerCase() === 'hola' || text.toLowerCase() === 'reiniciar') {
 sessions.set(from, { step: STEPS.GREETING, data: {} });
@@ -317,14 +393,11 @@ await sendText(from, 'No recibi una imagen. Envia el archivo adjunto.');
 return;
 }
 try {
-const mediaId = getMediaId(msg);
-const { buffer, mimeType } = await downloadMedia(mediaId);
-const ext1 = (mimeType.split('/')[1] || 'jpg').split(';')[0];
-const name1 = 'contacto_' + from + '_' + Date.now() + '.' + ext1;
-const url1 = await db.uploadFile(name1, buffer, mimeType);
-session.data.urlContacto = url1;
+session.data.urlContacto = await saveProof(msg, from, 'contacto');
 } catch (dlErr) {
-console.error('Error descargando media:', dlErr.message);
+console.error('Error guardando comprobante de contacto:', dlErr.message);
+await sendText(from, 'No pude guardar tu archivo. Intenta enviarlo nuevamente (imagen o PDF).');
+return;
 }
 session.step = STEPS.CAUSAL;
 await sendText(from, 'Imagen recibida. Cual es la *causal*?\nResponde con el numero:\n' + formatOptions(validCausales));
@@ -363,14 +436,11 @@ await sendText(from, 'Por favor envia el archivo adjunto.');
 return;
 }
 try {
-const mediaId = getMediaId(msg);
-const { buffer, mimeType } = await downloadMedia(mediaId);
-const ext2 = (mimeType.split('/')[1] || 'jpg').split(';')[0];
-const name2 = 'causal_' + from + '_' + Date.now() + '.' + ext2;
-const url2 = await db.uploadFile(name2, buffer, mimeType);
-session.data.urlCausal = url2;
+session.data.urlCausal = await saveProof(msg, from, 'causal');
 } catch (dlErr2) {
-console.error('Error descargando media:', dlErr2.message);
+console.error('Error guardando comprobante de causal:', dlErr2.message);
+await sendText(from, 'No pude guardar tu archivo. Intenta enviarlo nuevamente (imagen o PDF).');
+return;
 }
 session.step = STEPS.DECLARACIONES;
 await sendText(from,
@@ -402,6 +472,11 @@ await sendText(from, 'Error: ' + (e.message || 'desconocido') + '\nEscribe "rein
 // 4. EVALUACION Y GUARDADO
 // ==========================================
 async function evaluateAndSave(data, from) {
+if (!data.urlContacto || !data.urlCausal) {
+console.error('Devolucion rechazada por falta de comprobantes. ejecutivo=' + data.ejecutivo);
+await sendText(from, 'No se registro la devolucion porque faltan los comprobantes adjuntos (contacto y causal). Escribe "reiniciar" y vuelve a enviarlos.');
+return;
+}
 let estado = 'PREAPROBADA';
 let motivo = 'Cumple con los criterios del protocolo IAsapre. Sujeto a revision por el equipo interno.';
 
@@ -446,7 +521,13 @@ causal: data.urlCausal || null
 });
 
 await sendText(from, 'Devolucion ingresada (ID: ' + id + ').\n\nGracias por informarlo. Se revisara y tendras una respuesta en un maximo de 5 dias habiles.\n\nAnte cualquier duda, escribe a Nicolas Larrain: +56985380357 o nico@iasapre.cl');
+} catch (err) {
+console.error('Error guardando:', err);
+await sendText(from, 'Error al guardar. Escribe "reiniciar" para intentar de nuevo.');
+return;
+}
 
+try {
 const adjuntos = [];
 if (data.urlContacto) adjuntos.push('Contacto: ' + data.urlContacto);
 if (data.urlCausal) adjuntos.push('Causal: ' + data.urlCausal);
@@ -464,8 +545,7 @@ await sendText(ADMIN_PHONE,
 '*Evaluacion:* ' + estado + '\n' +
 '*Motivo:* ' + motivo + adjStr
 );
-} catch (err) {
-console.error('Error guardando:', err);
-await sendText(from, 'Error al guardar. Escribe "reiniciar" para intentar de nuevo.');
+} catch (errAviso) {
+console.error('AVISO AL ADMIN FALLIDO para ' + id + ': ' + errAviso.message + '. La devolucion SI quedo guardada; usa el comando "pendientes".');
 }
 }
