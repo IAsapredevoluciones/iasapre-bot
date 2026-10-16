@@ -84,3 +84,14 @@ console.error('Error en uploadFile:', err.message);
 return null;
 }
 }
+
+export async function updateReturnStatus(id, estado, motivo) {
+if (!supabase) throw new Error('Supabase no configurado');
+const { data, error } = await supabase
+.from('devoluciones')
+.update({ estado, motivo })
+.eq('id', id)
+.select();
+if (error) throw error;
+return data && data.length > 0 ? data[0] : null;
+}
