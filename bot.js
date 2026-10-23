@@ -6,6 +6,7 @@
 import express from 'express';
 import cors from 'cors';
 import * as db from './database.js';
+import { installExtras } from './extras.js';
 
 // ==========================================
 // 0. CONFIG
@@ -28,6 +29,7 @@ const port = process.env.PORT || 10000;
 
 app.use(cors());
 app.use(express.json());
+installExtras(app);
 
 app.get('/api/returns', async (req, res) => {
 try {
